@@ -55,9 +55,22 @@ def test_pairs_lists_aligned_and_rejected(http) -> None:
     assert result.exit_code == 0, result.output
     assert out['summary']['aligned'] == 1
     [row] = out['relations']
-    assert row['polymarket']['matching_outcome'] == 'Stars'
+    assert row['market_a'] == {
+        'venue': 'kalshi',
+        'market_id': 'KXNHLGAME-26OCT10DALPIT-DAL',
+        'name': 'Dallas wins',
+        'first_outcome': 'Dallas',
+    }
+    assert row['market_b']['matching_outcome'] == 'Stars'
     assert row['evidence'] == ['team code']
     assert out['rejected'][0]['reason'] == 'Kalshi market is finalized'
+
+
+def test_venues_option_is_validated() -> None:
+    result, _ = invoke('kairos', '--venues', 'kalshi', 'pairs')
+    assert result.exit_code != 0
+    result, _ = invoke('kairos', '--venues', 'kalshi,opinion', 'pairs')
+    assert result.exit_code != 0
 
 
 def test_sync_writes_an_oracle3_store(http, tmp_path) -> None:
@@ -69,6 +82,17 @@ def test_sync_writes_an_oracle3_store(http, tmp_path) -> None:
     assert [r.relation_id for r in RelationStore(store).list()] == [
         'kairos:KXNHLGAME-26OCT10DALPIT-DAL:1'
     ]
+
+
+def test_sync_asks_kairos_for_kalshi_pairs_only_by_default(http, tmp_path) -> None:
+    route(http)
+    invoke('kairos', 'sync', '--store', str(tmp_path / 'relations.json'))
+    [catalog] = [r for r in http.requests if 'matched-markets' in str(r.url)]
+    assert catalog.url.params['provider'] == 'kalshi'  # Kalshi–Polymarket pairs
+    http.requests.clear()
+    invoke('kairos', 'pairs')
+    [catalog] = [r for r in http.requests if 'matched-markets' in str(r.url)]
+    assert 'provider' not in catalog.url.params  # every venue
 
 
 def test_sync_dry_run_writes_nothing(http, tmp_path) -> None:

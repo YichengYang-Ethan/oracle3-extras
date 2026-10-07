@@ -27,10 +27,17 @@ __all__ = ['event_time', 'load_archive', 'started_between', 'update_archive']
 
 
 def event_time(relation: MarketRelation | dict[str, Any]) -> datetime | None:
-    """When the relation's event starts: Polymarket's game start, else its expiry."""
+    """When the relation's event starts: a game start on either side, else its expiry."""
     row = relation.to_dict() if isinstance(relation, MarketRelation) else relation
-    market_b = row.get('market_b') or {}
-    return utc_time(market_b.get('game_start')) or utc_time(row.get('valid_until'))
+    for market in (row.get('market_b') or {}, row.get('market_a') or {}):
+        start = utc_time(market.get('game_start'))
+        if start:
+            return start
+    for market in (row.get('market_b') or {}, row.get('market_a') or {}):
+        day = utc_time(market.get('event_date'))
+        if day:
+            return day
+    return utc_time(row.get('valid_until'))
 
 
 def started_between(

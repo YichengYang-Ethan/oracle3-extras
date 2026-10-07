@@ -42,7 +42,7 @@ def scan(
     top: int,
     no_depth: bool,
 ) -> None:
-    """Check stored relations against live Kalshi and Polymarket prices (read-only)."""
+    """Check stored relations against live Kalshi, Polymarket and Predict.fun prices (read-only)."""
     relations = RelationStore(store).list(status=status) if store.exists() else []
     if source:
         relations = [r for r in relations if r.relation_id.startswith(f'{source}:')]

@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.4.0] - 2026-10-07
+
+### Added
+
+- Every venue Kairos matches: Kalshi, Polymarket, Predict.fun and Hyperliquid. `kairos_relations(venues=...)` and the `--venues` option pick any two or more; by default all four. `kairos sync` still writes only Kalshi–Polymarket pairs unless `--venues` says otherwise, because oracle3's own tools price those two venues.
+  - `align_two_outcome_markets` lines up pairs without a Kalshi side: Predict.fun's copies of Polymarket markets (same question and event, outcomes sometimes given as team codes such as `HOU`/`TEN`), Hyperliquid HIP-4 binaries (`League: A v B: Subject`), totals and draws.
+  - `as_polymarket_shape` and `expand_labels` turn Kairos Market Data metadata into the Gamma shape the aligners read; `build_relation` and `relation_id` build relations for any venue pair (Kalshi–Polymarket ids are unchanged).
+  - Relations keep Kairos's categories (`analysis_b['kairos_categories']`).
+- `scan_relations` prices Predict.fun legs from their last trades (Kairos marks) and confirms the largest edges with Kairos fee quotes, which walk the live Predict.fun book (`max_confirm`, 50 by default; `kairos scan --max-confirm`). Fee quotes need a Kairos key with the `trade:read` scope; without one these edges stay unconfirmed and are never reported as opportunities. Hyperliquid pairs are skipped: Kairos has no fee quotes for it yet.
+- `KairosClient.markets`, `marks`, `fee_quote` and `trade_metrics` (24-hour volume per market, `/v1/trades/metrics`).
+- `recent_history`: both venues' trade prices over the last 24 hours in one-hour buckets, up to each event's start, for markets that run for months.
+- `price_history`, `check_settlements` and the archive work for every venue pair.
+- `venues.PredictFunSchedule`: Predict.fun's taker fee, `rate × min(p, 1 − p)` per share.
+
+### Changed
+
+- `KairosClient.candles` sends up to 200 series per call as long as they add up to at most 9,000 buckets (`max_bars`), instead of 25 series per call: one-minute windows still go about 25 at a time, hourly ones 200.
+- `/v1/marks` calls carry at most 100 pairs and 15,000 characters: 200 pairs with 77-digit token ids made a URL Kairos's server refused (HTTP 414).
+- HTTP requests are retried four times instead of three.
+- Renamed, because pairs no longer always have a Kalshi and a Polymarket side:
+  - `SettlementCheck.kalshi` and `.polymarket` are now `.first` and `.second`; the old names still work and warn until the next minor release.
+  - Dictionary keys: `kalshi` and `polymarket` are now `market_a` and `market_b` in `PairHistory.summary()` and in `kairos pairs` rows; `SettlementCheck.to_dict()` has `market_a`, `market_b`, `a_first_outcome_paid` and `b_first_outcome_paid` instead of `kalshi_market`, `polymarket_market`, `kalshi_yes_paid` and `polymarket_first_outcome_paid`. Both now also have `venues`.
+- `KairosRelations.summary()` adds `considered` and `aligned_by_venues`; `history_summary` counts pairs without a start time in its overall statistics.
+
+### Fixed
+
+- One venue failing no longer stops a scan or a settlement check: its relations are skipped as `<venue> data unavailable` and the rest go on. A DNS error at Polymarket had ended a 27-minute scan with nothing to show.
+- `gather_limited` cancels and closes the jobs still queued when one fails, so none is left running or unawaited.
+- Predict.fun markets that have never traded are reported as `no Predict.fun trades yet` instead of being priced with no prices.
+- Tennis matches postponed by rain are lined up with a `postponed` warning instead of rejected as `different dates`: Kalshi keeps the original date in the ticker and the market open until the match is played, while Polymarket lists the new start.
+- A word many team names share (`state`, `university`, `college`) no longer decides which Kalshi team an outcome is: Jacksonville St. had been lined up with Kennesaw State's code.
+
 ## [0.3.0] - 2026-10-07
 
 ### Added

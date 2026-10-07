@@ -4,7 +4,7 @@ oracle3-extras extends [oracle3](https://github.com/YichengYang-Ethan/oracle3-pr
 
 Highlights:
 
-- **Kairos cross-venue pairs as oracle3 relations.** [Kairos](https://kairos.trade) matches the same market on Kalshi and Polymarket. oracle3-extras lines up the outcomes of every pair, checks each one independently (team names and codes, totals lines, game dates) and writes the `same_event` or `complement` relations oracle3 already understands.
+- **Kairos cross-venue pairs as oracle3 relations.** [Kairos](https://kairos.trade) matches the same market on Kalshi, Polymarket, Predict.fun and Hyperliquid. oracle3-extras lines up the outcomes of every pair, checks each one independently (team names and codes, totals lines, game dates, event ids) and writes the `same_event` or `complement` relations oracle3 already understands.
 - **Live no-arbitrage scans.** `scan_relations` checks thousands of relations against batched top-of-book quotes, then walks the order books of the survivors to size each edge after fees.
 - **MetaMask Agent Wallet execution.** An oracle3 `Trader` that routes Polymarket orders through Agent Wallet, so oracle3 never holds a private key.
 
@@ -12,10 +12,10 @@ oracle3-extras mirrors oracle3's namespaces to make usage and migration as easy 
 
 | oracle3 | oracle3-extras | Adds |
 |---|---|---|
-| `oracle3.market` (relations) | `oracle3_extras.market` | `align_kalshi_polymarket`, `market.kairos` |
+| `oracle3.market` (relations) | `oracle3_extras.market` | `align_kalshi_polymarket`, `align_two_outcome_markets`, `market.kairos` |
 | `oracle3.arbitrage` (`check_constraint`) | `oracle3_extras.arbitrage` | `scan_relations`, `walk_books` |
 | `oracle3.trader` (`Trader`) | `oracle3_extras.trader` | `metamask.AgentWalletTrader` |
-| | `oracle3_extras.venues` | Batched, read-only Kalshi and Polymarket data |
+| | `oracle3_extras.venues` | Batched, read-only Kalshi and Polymarket data; Predict.fun's fee schedule |
 
 ```python
 import oracle3_extras as o3x
@@ -47,31 +47,34 @@ Every command prints one JSON document on stdout, so agents and scripts can read
 
 ## Kairos cross-venue pairs
 
-Kairos is a trading terminal and API that aggregates Kalshi, Polymarket, Predict.fun and Hyperliquid. Its public Data API publishes a catalog of markets it has matched across venues. Finding the same event on two venues is the hardest part of cross-venue research; this integration turns Kairos's catalog into oracle3 relations you can check, store and trade.
+Kairos is a trading terminal and API that aggregates Kalshi, Polymarket, Predict.fun and Hyperliquid. Its public Data API publishes a catalog of markets it has matched across venues. Finding the same event on two venues is the hardest part of cross-venue research; this integration turns Kairos's catalog into oracle3 relations you can check, store and trade, for every venue pair Kairos lists.
 
 ```text
-Kairos /matched-markets        oracle3_extras.market.kairos             oracle3
-  Kalshi <-> Polymarket   -->    look up both markets on the venues -->    same_event / complement relations
-  similarity >= 0.82             line up outcomes, check, explain          relation store, check_constraint_live,
-                                                                           oracle3_extras.arbitrage.scan_relations
+Kairos /matched-markets          oracle3_extras.market.kairos             oracle3
+  Kalshi, Polymarket,      -->     look up both markets             -->    same_event / complement relations
+  Predict.fun, Hyperliquid         line up outcomes, check, explain        relation store, check_constraint_live,
+  similarity >= 0.82                                                       oracle3_extras.arbitrage.scan_relations
 ```
+
+A daily report built on this integration, by market division (elections, sports, crypto, economics, tech, weather), is published at [Prediction-Illinois/kairos-cross-venue](https://github.com/Prediction-Illinois/kairos-cross-venue).
 
 ### Quickstart
 
 ```bash
 oracle3-extras kairos pairs --rejected     # aligned pairs, and why the others were left out
-oracle3-extras kairos sync                 # write them into ~/.oracle3/relations.json
+oracle3-extras kairos sync                 # write the Kalshi–Polymarket pairs into ~/.oracle3/relations.json
 oracle3-extras kairos scan                 # cross-venue edges after fees, sized by the books
 oracle3-extras scan --source kairos        # re-check the stored relations later
+oracle3-extras kairos --venues kalshi,polymarket pairs   # only some venues
 ```
 
-No account is needed. Kairos's public tier allows 60 catalog requests a minute; a full sync uses four. Set `KAIROS_CLIENT_ID`, `KAIROS_API_KEY` and `KAIROS_API_SECRET` to use an API key instead (a read-only key is enough; nothing here trades).
+No account is needed. Kairos's public tier allows 60 catalog requests a minute; walking the whole catalog (11,487 pairs on 7 October 2026) takes 14. Set `KAIROS_CLIENT_ID`, `KAIROS_API_KEY` and `KAIROS_API_SECRET` to use an API key instead (a read-only key is enough; nothing here trades). A key raises Kairos's rate limits tenfold and is needed for the fee quotes that confirm Predict.fun prices.
 
-After `sync`, oracle3's MCP server sees the pairs: `list_relations` lists them, and each relation's markets (`venue`, `market_id`) can be passed straight to `check_constraint_live`.
+After `sync`, oracle3's MCP server sees the pairs: `list_relations` lists them, and each relation's markets (`venue`, `market_id`) can be passed straight to `check_constraint_live`. oracle3 prices Kalshi and Polymarket, so `sync` writes only their pairs unless `--venues` names others; the other commands cover every venue.
 
 ### How a pair becomes a relation
 
-Kalshi lists one binary market per outcome; Polymarket lists two-outcome markets. When Kalshi YES is Polymarket's first outcome, the relation is `same_event` (P(A) = P(B)); when it is the second, `complement` (P(A) + P(B) = 1). Kairos does not say which outcome matches, so `align_kalshi_polymarket` works it out and accepts a pair only when at least one check identifies the outcome and none contradicts it:
+Market A is the side on the first venue in the order Kalshi, Polymarket, Predict.fun, Hyperliquid. When market A's first outcome (YES on Kalshi) is market B's first outcome, the relation is `same_event` (P(A) = P(B)); when it is the second, `complement` (P(A) + P(B) = 1). Kairos does not say which outcome matches, so oracle3-extras works it out and accepts a pair only when at least one check identifies the outcome and none contradicts it. For pairs with a Kalshi side, `align_kalshi_polymarket`:
 
 | Check | Example |
 |---|---|
@@ -79,15 +82,30 @@ Kalshi lists one binary market per outcome; Polymarket lists two-outcome markets
 | Team codes | `KXNHLGAME-26OCT10DALPIT-DAL` is the first team of `nhl-dal-pit-2026-10-10` (`Stars`) |
 | Lines | Kalshi `Over 49.5 points` needs a Polymarket `O/U 49.5`; `O/U 50.5` is rejected |
 | Periods | A first-half market never matches a full-game one |
-| Schedule | The game must start on the day the Kalshi ticker names (one day of slack for time zones), and within three hours of the ticker's start time when it has one |
+| Schedule | The game must start on the day the Kalshi ticker names (one day of slack for time zones), and within three hours of the ticker's start time when it has one; a match Kalshi keeps open after its original date is accepted as postponed, with a warning |
 
-On 7 October 2026, Kairos listed 2,461 Kalshi–Polymarket pairs. 2,432 were aligned (98.8%): 1,170 totals with the same line, 666 head-to-head markets, 396 single-team markets and 200 draws. Where both the name and the team-code checks applied (815 pairs) they always agreed. 46 aligned pairs carry a warning, such as a tennis match postponed by a day or a game Polymarket first listed for another date. The 29 rejected pairs are 25 whose dates disagree (23 college football games where Kalshi's rules name 16 October and Polymarket starts them on the 17th, US Eastern time) and 4 where Kalshi names a city (`Bilbao`) and Polymarket a club (`Athletic Club`) with different codes.
+For the other pairs, `align_two_outcome_markets` reads Predict.fun's copies of Polymarket markets (the same question and event; outcomes such as `HOU`/`TEN` are matched as team codes), Hyperliquid's binaries (`League: A v B: Subject`), totals and draws. Two markets with the same question but different events, such as the same "leading at halftime?" question for two different games, are rejected.
+
+On 7 October 2026 at 20:15 UTC, Kairos listed 11,487 pairs and 11,389 were aligned (99.1%):
+
+| Venues | Pairs | Aligned |
+|---|---|---|
+| Polymarket–Predict.fun | 8,755 | 8,703 |
+| Kalshi–Polymarket | 2,296 | 2,253 |
+| Kalshi–Predict.fun | 252 | 250 |
+| Kalshi–Hyperliquid | 81 | 81 |
+| Polymarket–Hyperliquid | 72 | 72 |
+| Predict.fun–Hyperliquid | 31 | 30 |
+
+Every pair with a Kalshi or Hyperliquid side was a sports pair; the 1,316 others (crypto, politics, economics, tech and culture) were all Polymarket–Predict.fun. Of the 98 rejected pairs, 52 were Polymarket–Predict.fun markets with the same question about different games, and 39 Kalshi–Polymarket pairs whose dates disagree (11 rain-delayed tennis matches, which 0.4.0 now aligns, and 28 college football games whose Kalshi contracts name another day).
 
 Every relation starts at status `discovered`, with its evidence and warnings in `reasoning`. Read both rulebooks before trading: ties, postponements and cancellations can settle differently on the two venues.
 
 ### What a scan reports
 
-`kairos scan` quotes every aligned pair in batches (100 Kalshi markets or 50 Polymarket markets per request), runs oracle3's `check_constraint` with each venue's published fee schedule, and re-checks the pairs with an edge after fees against full order books. On 7 October 2026 at 06:09 UTC, 45 of 2,432 pairs broke the no-arbitrage bound before fees, 5 kept an edge after fees at the top of the book, and 2 survived the order books, worth $0.014 on 5 contracts and $0.0004 on 0.05 contracts. Cross-venue gaps between these two venues are rare and small after fees; the scan is built to say so honestly rather than to promise profits.
+`kairos scan` quotes every aligned pair in batches (100 Kalshi markets or 50 Polymarket markets per request), runs oracle3's `check_constraint` with each venue's published fee schedule, and re-checks the pairs with an edge after fees against full order books. Predict.fun has no public book to batch, so its legs are priced from their last trades (Kairos marks) and the 50 largest edges are confirmed with Kairos fee quotes, which walk the live Predict.fun book; without a key they stay unconfirmed and are never reported. Hyperliquid pairs are listed but not priced yet.
+
+On 7 October 2026 at 20:23 UTC, 4 of the 2,253 Kalshi–Polymarket pairs had an edge after fees at the top of the book and 3 survived the order books, the largest worth $0.0075 on 0.74 contracts. 1,156 of the 2,199 pairs priced from Predict.fun last trades showed an edge after fees on those last trades, which are not quotes: without a key, none was confirmed. 6,754 Predict.fun markets had never traded. Cross-venue gaps are rare and small after fees; the scan is built to say so honestly rather than to promise profits.
 
 ### History and settlement checks
 
@@ -98,6 +116,8 @@ oracle3-extras kairos snapshot --archive pairs.jsonl.gz      # add today's pairs
 oracle3-extras kairos history --archive pairs.jsonl.gz       # how far apart the venues traded, by minutes from the start
 oracle3-extras kairos settlements --archive pairs.jsonl.gz   # did both venues settle each pair the same way?
 ```
+
+In Python, `recent_history` compares the venues over the last 24 hours in one-hour buckets instead, up to each event's start, which suits markets that run for months, and `KairosClient.trade_metrics` gives each market's 24-hour volume.
 
 On 7 October 2026, the 253 pairs that had settled on both venues in the previous three days all settled the same way, and a sample of 30 matched Kalshi's and Polymarket's own results. Over the 308 pairs that traded on both venues in the same minute, the median gap between the last trades was 1 cent; the 90th percentile was 2 cents before the start and 6 cents three to four hours in. `history` measures disagreement between trade prices, not arbitrage that could have been executed.
 

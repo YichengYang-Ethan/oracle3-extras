@@ -89,10 +89,10 @@ async def request_json(
     *,
     params: Any = None,
     json: Any = None,
-    retries: int = 3,
+    retries: int = 4,
     max_wait: float = 60.0,
 ) -> Any:
-    """Send one request and decode the JSON body, retrying 429 and 5xx answers."""
+    """Send one request and decode the JSON body, retrying 429, 5xx and network errors."""
     attempt = 0
     while True:
         try:
@@ -137,11 +137,29 @@ def chunks(items: Sequence[T], size: int) -> list[Sequence[T]]:
 
 
 async def gather_limited(jobs: Iterable[Awaitable[T]], limit: int = 4) -> list[T]:
-    """Await ``jobs`` with at most ``limit`` in flight, keeping their order."""
+    """Await ``jobs`` with at most ``limit`` in flight, keeping their order.
+
+    If one job fails, the others are cancelled before the error is raised, so no
+    request is left running or unawaited.
+    """
     semaphore = asyncio.Semaphore(limit)
 
     async def run(job: Awaitable[T]) -> T:
-        async with semaphore:
-            return await job
+        try:
+            async with semaphore:
+                return await job
+        finally:
+            # A job cancelled while queued never started; closing it keeps
+            # Python from warning that the coroutine was never awaited.
+            close = getattr(job, 'close', None)
+            if close is not None:
+                close()
 
-    return list(await asyncio.gather(*(run(job) for job in jobs)))
+    tasks = [asyncio.ensure_future(run(job)) for job in jobs]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise

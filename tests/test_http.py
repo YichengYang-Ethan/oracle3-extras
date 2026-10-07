@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import gc
+import warnings
+
 import pytest
 
 from oracle3_extras._http import (
@@ -70,3 +74,22 @@ async def test_gather_limited_keeps_order() -> None:
 
 def test_chunks() -> None:
     assert chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+
+
+async def test_gather_limited_cancels_the_rest_after_a_failure() -> None:
+    started: list[int] = []
+
+    async def job(n: int) -> int:
+        started.append(n)
+        await asyncio.sleep(0 if n == 0 else 10)
+        if n == 0:
+            raise RuntimeError('boom')
+        return n
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with pytest.raises(RuntimeError, match='boom'):
+            await gather_limited([job(n) for n in range(6)], limit=2)
+        gc.collect()
+    assert 0 in started and len(started) < 6  # queued jobs were cancelled
+    assert not [w for w in caught if 'never awaited' in str(w.message)]

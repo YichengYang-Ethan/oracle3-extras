@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oracle3-extras"
-version = "0.3.0"
+version = "0.4.0"
 description = "Integrations and experimental features for oracle3: Kairos cross-venue pairs, live no-arbitrage scans and MetaMask Agent Wallet execution."
 readme = "README.md"
 license = "Apache-2.0"
@@ -82,7 +82,7 @@ select = ["E", "F", "I", "B", "UP", "S"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S106", "S603"]
+"tests/**" = ["S101", "S105", "S106", "S603"]
 "oracle3_extras/trader/metamask/client.py" = ["S603"]
 
 [tool.ruff.format]

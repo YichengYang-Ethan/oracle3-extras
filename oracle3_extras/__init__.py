@@ -17,7 +17,10 @@ import logging
 from oracle3_extras import arbitrage, market, trader, venues
 from oracle3_extras._version import __version__
 from oracle3_extras.arbitrage import scan_relations, walk_books
-from oracle3_extras.market.align import align_kalshi_polymarket
+from oracle3_extras.market.align import (
+    align_kalshi_polymarket,
+    align_two_outcome_markets,
+)
 from oracle3_extras.market.kairos import KairosClient, kairos_relations
 from oracle3_extras.trader.metamask import AgentWalletClient, AgentWalletTrader
 
@@ -27,6 +30,7 @@ __all__ = [
     'KairosClient',
     '__version__',
     'align_kalshi_polymarket',
+    'align_two_outcome_markets',
     'arbitrage',
     'kairos_relations',
     'market',

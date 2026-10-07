@@ -40,7 +40,13 @@ from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
-__all__ = ['OutcomeAlignment', 'align_kalshi_polymarket', 'utc_time', 'words']
+__all__ = [
+    'OutcomeAlignment',
+    'align_kalshi_polymarket',
+    'align_two_outcome_markets',
+    'utc_time',
+    'words',
+]
 
 #: Largest gap between the start times the two venues publish for one game.
 START_TOLERANCE = timedelta(hours=3)
@@ -339,6 +345,44 @@ def _line(market: Mapping[str, Any], text: str) -> float | None:
 
 # ── Checks ───────────────────────────────────────────────────────────────
 
+_VENUE_NAMES = {
+    'kalshi': 'Kalshi',
+    'polymarket': 'Polymarket',
+    'predictfun': 'Predict.fun',
+    'hyperliquid': 'Hyperliquid',
+}
+
+
+def _venue(market: Mapping[str, Any]) -> str:
+    """Display name of the venue a market dict comes from (Gamma objects carry none)."""
+    return _VENUE_NAMES.get(str(market.get('venue') or 'polymarket'), 'Polymarket')
+
+
+#: How long after its scheduled time an open Kalshi market counts as postponed.
+POSTPONED_AFTER = timedelta(hours=12)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _postponed(kalshi: Mapping[str, Any], start: datetime) -> bool:
+    """Kalshi's game was due long ago, its market is still open, and it covers ``start``.
+
+    Rain-delayed tennis matches look like this: Kalshi keeps the original date
+    in the ticker, the other venue lists the new start, and Kalshi's rules
+    (``after a ball has been played``) keep the market open until it is played.
+    """
+    if str(kalshi.get('status') or '') not in ('active', 'open'):
+        return False
+    due = utc_time(
+        kalshi.get('occurrence_datetime') or kalshi.get('expected_expiration_time')
+    )
+    last = utc_time(kalshi.get('latest_expiration_time') or kalshi.get('close_time'))
+    if due is None or last is None:
+        return False
+    return due < _now() - POSTPONED_AFTER and due < start <= last
+
 
 def _schedule(
     kalshi: Mapping[str, Any],
@@ -354,14 +398,24 @@ def _schedule(
     example, keep their market when postponed); the second case is flagged.
     """
     start = utc_time(poly.get('gameStartTime'))
+    venue = _venue(poly)
     if start is None:
-        if ticker.day and slug.day and abs((slug.day - ticker.day).days) > 1:
-            return f'different dates: Kalshi {ticker.day}, Polymarket {slug.day}', []
+        # Venues without an exact start time (Predict.fun, Hyperliquid) only
+        # publish a date; compare days, with one day of slack for time zones.
+        day = utc_time(poly.get('eventDate'))
+        other = day.astimezone(_ET).date() if day else slug.day
+        if ticker.day and other and abs((other - ticker.day).days) > 1:
+            if day and _postponed(kalshi, day):
+                return '', [
+                    f'postponed: Kalshi scheduled it for {ticker.day} and is still '
+                    f'open; {venue} lists {other}'
+                ]
+            return f'different dates: Kalshi {ticker.day}, {venue} {other}', []
         return '', []
     if ticker.start is not None and abs(ticker.start - start) > START_TOLERANCE:
         return (
             f'different start times: Kalshi {ticker.start:%Y-%m-%d %H:%M}Z, '
-            f'Polymarket {start:%Y-%m-%d %H:%M}Z'
+            f'{venue} {start:%Y-%m-%d %H:%M}Z'
         ), []
     warnings = []
     if ticker.start is None and ticker.day is not None:
@@ -374,20 +428,27 @@ def _schedule(
         consistent = hours is not None and low <= hours <= high
         dated = 'scheduled for' in str(kalshi.get('rules_primary') or '').lower()
         if abs(gap) > 1 or (gap and not consistent and dated):
+            if not dated and _postponed(kalshi, start):
+                return '', [
+                    f'postponed: Kalshi scheduled it for {ticker.day} and is still '
+                    f'open; {venue} starts {start:%Y-%m-%d %H:%M}Z'
+                ]
             return (
                 f'different dates: Kalshi {ticker.day}, '
-                f'Polymarket starts {start:%Y-%m-%d %H:%M}Z'
+                f'{venue} starts {start:%Y-%m-%d %H:%M}Z'
             ), []
         if gap and not consistent:
             warnings.append(
-                f'Kalshi lists {ticker.day}, Polymarket starts {start:%Y-%m-%d %H:%M}Z '
+                f'Kalshi lists {ticker.day}, {venue} starts {start:%Y-%m-%d %H:%M}Z '
                 '(postponed?)'
             )
     if slug.day and abs((start.date() - slug.day).days) > 1:
-        warnings.append(
-            f'rescheduled: Polymarket first listed this game for {slug.day}'
-        )
+        warnings.append(f'rescheduled: {venue} first listed this game for {slug.day}')
     return '', warnings
+
+
+#: Words that appear in many team names and cannot tell two teams apart alone.
+GENERIC_WORDS = frozenset({'state', 'university', 'college'})
 
 
 def _pick(
@@ -398,7 +459,9 @@ def _pick(
 ) -> tuple[int | None, list[str], str]:
     """Pick one of two outcomes by name and by team code; refuse on any disagreement."""
     by_name = [
-        i for i in (0, 1) if _shared(label, names[i]) - _shared(label, names[1 - i])
+        i
+        for i in (0, 1)
+        if (_shared(label, names[i]) - _shared(label, names[1 - i])) - GENERIC_WORDS
     ]
     if not by_name:
         by_name = [i for i in (0, 1) if label and label == names[i] != names[1 - i]]
@@ -431,7 +494,7 @@ def _align_totals(
         return OutcomeAlignment.reject('totals', 'no line to compare')
     if abs(k_line - p_line) > 1e-9:
         return OutcomeAlignment.reject(
-            'totals', f'different lines: Kalshi {k_line:g}, Polymarket {p_line:g}'
+            'totals', f'different lines: Kalshi {k_line:g}, {_venue(poly)} {p_line:g}'
         )
     strike = str(kalshi.get('strike_type') or '')
     k_side = (
@@ -483,7 +546,9 @@ def _align_binary(
     by_code = _code_matches(ticker.yes_code, suffix)
     against_code = not by_code and _code_matches(ticker.other_code, suffix)
     if against_name or against_code:
-        return OutcomeAlignment.reject('binary', 'Polymarket asks about the other team')
+        return OutcomeAlignment.reject(
+            'binary', f'{_venue(poly)} asks about the other team'
+        )
     evidence = (['name'] if by_name else []) + (['team code'] if by_code else [])
     if not evidence:
         return OutcomeAlignment.reject(
@@ -547,3 +612,192 @@ def align_kalshi_polymarket(
             return OutcomeAlignment.reject(kind, problem)
         result = OutcomeAlignment.at(kind, index, evidence)
     return result.warn(warnings)
+
+
+# ── Two-outcome markets on other venues ──────────────────────────────────
+
+
+def _letters(text: Any) -> str:
+    return re.sub(r'[^a-z]', '', _ascii(text))
+
+
+def labels_agree(x: Any, y: Any) -> bool:
+    """Whether two outcome labels clearly name the same thing.
+
+    Words must overlap, or one label must start a word of the other
+    (``NEMI1`` for Nemiga, ``AST10`` for Astralis). Looser abbreviations are
+    left to :func:`abbreviates`, because short codes match too much.
+
+    >>> labels_agree('Over 21.5', 'Over'), labels_agree('NEMI1', 'Nemiga')
+    (True, True)
+    >>> labels_agree('TEN', 'Texans'), labels_agree('Over', 'Under')
+    (False, False)
+    """
+    wx, wy = (
+        words(re.sub(r'[\d.]+', ' ', str(x))),
+        words(re.sub(r'[\d.]+', ' ', str(y))),
+    )
+    if wx and wy and (wx <= wy or wy <= wx or _shared(wx, wy)):
+        return True
+    for short, long in ((x, y), (y, x)):
+        code = _letters(short)
+        if len(code) >= 3 and any(
+            w.startswith(code) for w in re.findall(r'[a-z]+', _ascii(long))
+        ):
+            return True
+    return False
+
+
+def abbreviates(code: Any, name: Any) -> bool:
+    """Whether ``code`` could abbreviate ``name``: same first letter, letters in order.
+
+    >>> abbreviates('WVIR', 'West Virginia'), abbreviates('TTG', 'Talent Gaming')
+    (True, True)
+    >>> abbreviates('HOU', 'Texans')
+    False
+    """
+    short, long = _letters(code), _letters(name)
+    if len(short) < 2 or not long or short[0] != long[0]:
+        return False
+    rest = iter(long)
+    return all(letter in rest for letter in short)
+
+
+def _same_question(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    qa, qb = str(a.get('question') or ''), str(b.get('question') or '')
+    squash = lambda text: re.sub(r'\W+', ' ', _ascii(text)).strip()  # noqa: E731
+    return bool(qa) and squash(qa) == squash(qb)
+
+
+def _event_slug(market: Mapping[str, Any]) -> str:
+    if market.get('eventSlug'):
+        return str(market['eventSlug'])
+    events = market.get('events') or []
+    first = events[0] if events and isinstance(events[0], Mapping) else {}
+    return str(first.get('slug') or '')
+
+
+def _event_day(market: Mapping[str, Any]) -> date | None:
+    moment = utc_time(market.get('gameStartTime')) or utc_time(market.get('eventDate'))
+    return moment.astimezone(_ET).date() if moment else None
+
+
+def _same_event(
+    a: Mapping[str, Any], b: Mapping[str, Any]
+) -> tuple[str, list[str], list[str]]:
+    """A reason the two markets are about different events, evidence and warnings."""
+    slug_a, slug_b = _event_slug(a), _event_slug(b)
+    if slug_a and slug_b:
+        if slug_a == slug_b:
+            return '', ['same event'], []
+        ea, eb = _slug(slug_a), _slug(slug_b)
+        if (
+            ea.day
+            and eb.day
+            and (abs((ea.day - eb.day).days) > 1 or ea.teams != eb.teams)
+        ):
+            return f'different events: {slug_a} vs {slug_b}', [], []
+    day_a, day_b = _event_day(a), _event_day(b)
+    if day_a and day_b and abs((day_a - day_b).days) > 1:
+        return f'different dates: {_venue(a)} {day_a}, {_venue(b)} {day_b}', [], []
+    if slug_a and slug_b:
+        return '', [], [f'event ids differ ({slug_a} vs {slug_b})']
+    return '', [], []
+
+
+def _subject(market: Mapping[str, Any]) -> frozenset[str]:
+    group = str(market.get('groupItemTitle') or '')
+    return words(group) if group else words(market.get('question'))
+
+
+def _map_outcomes(first: Sequence[str], second: Sequence[str]) -> int | None:
+    """Index in ``second`` of ``first[0]``, if the labels say so unambiguously."""
+    direct = labels_agree(first[0], second[0]) + labels_agree(first[1], second[1])
+    crossed = labels_agree(first[0], second[1]) + labels_agree(first[1], second[0])
+    if direct > crossed:
+        return 0
+    if crossed > direct:
+        return 1
+    return None
+
+
+def align_two_outcome_markets(
+    first: Mapping[str, Any], second: Mapping[str, Any]
+) -> OutcomeAlignment:
+    """Find the outcome of ``second`` that pays exactly when ``first``'s first outcome pays.
+
+    Both markets are in Polymarket's shape (a Gamma market object, or Kairos
+    metadata converted by :func:`oracle3_extras.market.kairos.markets.as_polymarket_shape`).
+    Predict.fun lists copies of Polymarket markets, so the commonest case is the
+    same question in the same event; its outcomes line up in order unless the
+    labels say they are reversed.
+    """
+    outcomes_a, outcomes_b = _outcomes(first), _outcomes(second)
+    if len(outcomes_a) != 2 or len(outcomes_b) != 2:
+        return OutcomeAlignment.reject('other', 'not two-outcome markets')
+    lowered_a = [o.strip().lower() for o in outcomes_a]
+    lowered_b = [o.strip().lower() for o in outcomes_b]
+    text_a = f"{first.get('question', '')} {first.get('groupItemTitle', '')}"
+    text_b = f"{second.get('question', '')} {second.get('groupItemTitle', '')}"
+    kind = (
+        'binary'
+        if lowered_a == ['yes', 'no']
+        else 'totals'
+        if lowered_a[0].startswith('over')
+        else 'head_to_head'
+    )
+    if _period(text_a) != _period(text_b):
+        return OutcomeAlignment.reject(
+            kind, 'different periods (for example half vs full game)'
+        )
+    problem, evidence, warnings = _same_event(first, second)
+    if problem:
+        return OutcomeAlignment.reject(kind, problem)
+
+    if _same_question(first, second):
+        index = _map_outcomes(outcomes_a, outcomes_b)
+        index = 0 if index is None else index
+        labels = ['same outcomes'] if lowered_a == lowered_b else []
+        reversed_note = ['outcomes listed in reverse'] if index else []
+        return OutcomeAlignment.at(
+            kind, index, ['same question', *evidence, *labels, *reversed_note]
+        ).warn(warnings)
+
+    binary_a, binary_b = lowered_a == ['yes', 'no'], lowered_b == ['yes', 'no']
+    if kind == 'totals' or lowered_b[0].startswith('over'):
+        line_a = _line(first, str(first.get('question') or ''))
+        line_b = _line(second, str(second.get('question') or ''))
+        if line_a is None or line_b is None or abs(line_a - line_b) > 1e-9:
+            return OutcomeAlignment.reject('totals', 'different or missing lines')
+        index = _map_outcomes(outcomes_a, outcomes_b)
+    elif binary_a and binary_b:
+        tie_a, tie_b = ('draw' in _ascii(text_a)), ('draw' in _ascii(text_b))
+        if tie_a or tie_b:
+            index = 0 if tie_a and tie_b else None
+        else:
+            sa, sb = _subject(first), _subject(second)
+            index = 0 if sa and sb and (_shared(sa, sb) or _shared(sb, sa)) else None
+    elif binary_a:
+        subject = _subject(first)
+        hits = [
+            i
+            for i in (0, 1)
+            if _shared(subject, words(outcomes_b[i]))
+            or labels_agree(first.get('groupItemTitle') or '', outcomes_b[i])
+        ]
+        index = hits[0] if len(hits) == 1 else None
+    elif binary_b:
+        subject = _subject(second)
+        hits = [
+            i
+            for i in (0, 1)
+            if _shared(subject, words(outcomes_a[i]))
+            or labels_agree(second.get('groupItemTitle') or '', outcomes_a[i])
+        ]
+        # second's YES is first's outcome hits[0]; first's outcome 0 pays with YES (0) or NO (1)
+        index = (0 if hits[0] == 0 else 1) if len(hits) == 1 else None
+    else:
+        index = _map_outcomes(outcomes_a, outcomes_b)
+    if index is None:
+        return OutcomeAlignment.reject(kind, 'could not line up the outcomes')
+    return OutcomeAlignment.at(kind, index, [*evidence, 'outcome names']).warn(warnings)

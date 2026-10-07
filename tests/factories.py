@@ -132,3 +132,53 @@ def kairos_page(
         'next_cursor': next_cursor,
         'catalog_version': version,
     }
+
+
+def kairos_md_market(
+    market_id: str,
+    title: str,
+    outcomes: list[str],
+    *,
+    event_id: str = '',
+    status: str = 'open',
+    category: str = 'Sports',
+    expires_at: str = '2026-10-10T23:00:00Z',
+    yes_sub_title: str = '',
+    fee_bps: int | None = None,
+) -> dict[str, Any]:
+    """One market as Kairos's Market Data API returns it (``POST /v1/markets/batch``)."""
+    listed = [
+        {'outcome': o, 'normalized_outcome': o.lower(), 'token_id': f'{market_id}-t{i}'}
+        for i, o in enumerate(outcomes)
+    ]
+    return {
+        'market_id': market_id,
+        'condition_id': f'0xcond{market_id}',
+        'event_id': event_id,
+        'title': title,
+        'status': status,
+        'category': category,
+        'end_date': None,
+        'taker_base_fee_bps': fee_bps,
+        'tick_size': 0.01,
+        'neg_risk': False,
+        'outcomes': listed,
+        'raw': {
+            'name': title,
+            'expires_at': expires_at,
+            'yes_sub_title': yes_sub_title,
+        },
+    }
+
+
+def kairos_any_pair(
+    a: tuple[str, str, str], b: tuple[str, str, str], similarity: float = 1.0
+) -> dict[str, Any]:
+    """A catalog pair between any two venues: each side is (provider, market id, title)."""
+    ids = {'kalshi': 1, 'polymarket': 2, 'predictfun': 3, 'hyperliquid': 9}
+    return {
+        'a': kairos_side(a[0], a[1], a[2], ids[a[0]]),
+        'b': kairos_side(b[0], b[1], b[2], ids[b[0]]),
+        'similarity': similarity,
+        'updated_at': '2026-10-07T05:38:57.617000',
+    }

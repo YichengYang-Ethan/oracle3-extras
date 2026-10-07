@@ -9,12 +9,20 @@ from oracle3_extras import venues
 from oracle3_extras.market.align import OutcomeAlignment
 from oracle3_extras.market.kairos import (
     DATA_API,
+    MARKET_DATA_API,
     MatchedPair,
     kairos_relations,
     save_relations,
     to_relation,
 )
-from tests.factories import gamma_market, kairos_page, kairos_pair, kalshi_market
+from tests.factories import (
+    gamma_market,
+    kairos_any_pair,
+    kairos_md_market,
+    kairos_page,
+    kairos_pair,
+    kalshi_market,
+)
 
 NHL = kalshi_market(
     'KXNHLGAME-26OCT10DALPIT-DAL', 'Dallas', occurrence='2026-10-11T02:00:00Z'
@@ -66,6 +74,9 @@ def route_catalog(http) -> None:
     )
     http.get(f'{venues.KALSHI_API}/markets', {'markets': [NHL, TOTAL, CLOSED]})
     http.get(f'{venues.GAMMA_API}/markets', [NHL_POLY, TOTAL_POLY, CLOSED_POLY])
+    http.add(
+        'POST', f'{MARKET_DATA_API}/v1/markets/batch', {'markets': {}, 'misses': ['99']}
+    )
 
 
 async def test_kairos_relations_aligns_and_explains_the_rest(http) -> None:
@@ -78,10 +89,13 @@ async def test_kairos_relations_aligns_and_explains_the_rest(http) -> None:
     assert reasons == [
         'Kalshi market is finalized',
         'Kalshi market not found',
+        'Kalshi market not found',
         'different lines: Kalshi 61.5, Polymarket 60.5',
     ]
     summary = result.summary()
     assert summary['pairs'] == 5 and summary['kalshi_polymarket'] == 4
+    assert summary['considered'] == 5
+    assert summary['aligned_by_venues'] == {'kalshi + polymarket': 1}
     assert summary['pairs_by_venues'] == {
         'kalshi + polymarket': 4,
         'kalshi + predictfun': 1,
@@ -153,3 +167,132 @@ def test_saved_relations_load_in_oracle3(tmp_path) -> None:
     loaded = RelationStore(store).list(spread_type='same_event')
     assert [r.relation_id for r in loaded] == ['kairos:K1:P1']
     assert RelationStore(store).find_by_market('B')
+
+
+ESPORTS = gamma_market(
+    '601',
+    'Counter-Strike: Nemiga vs Lavked - Map 1 Winner',
+    ['Nemiga', 'Lavked'],
+    slug='cs2-nemi-lav-2026-10-07-map-1',
+    sports_type='moneyline',
+    start='2026-10-07 18:00:00+00',
+    event_title='Counter-Strike: Nemiga vs Lavked',
+    events=[
+        {'slug': 'cs2-nemi-lav-2026-10-07', 'title': 'Counter-Strike: Nemiga vs Lavked'}
+    ],
+)
+ROUNDS = gamma_market(
+    '602',
+    'Map 1 Total Rounds: Over/Under 21.5',
+    ['Over', 'Under'],
+    slug='cs2-str4-xi-2026-10-07-rounds',
+    sports_type='totals',
+    line=21.5,
+    start='2026-10-07 18:00:00+00',
+    events=[{'slug': 'cs2-str4-xi-2026-10-07', 'title': 'STR4 vs XI'}],
+)
+
+
+async def test_predict_fun_copies_line_up_and_other_games_are_caught(http) -> None:
+    http.get(
+        f'{DATA_API}/matched-markets',
+        kairos_page(
+            [
+                kairos_any_pair(
+                    ('polymarket', '601', ESPORTS['question']),
+                    ('predictfun', 'pf1', ESPORTS['question']),
+                ),
+                kairos_any_pair(
+                    ('predictfun', 'pf2', ROUNDS['question']),
+                    ('polymarket', '602', ROUNDS['question']),
+                ),
+            ]
+        ),
+    )
+    http.get(f'{venues.GAMMA_API}/markets', [ESPORTS, ROUNDS])
+    http.add(
+        'POST',
+        f'{MARKET_DATA_API}/v1/markets/batch',
+        {
+            'markets': {
+                'pf1': kairos_md_market(
+                    'pf1',
+                    ESPORTS['question'],
+                    ['NEMI1', 'LAVKED'],
+                    event_id='cs2-nemi-lav-2026-10-07',
+                    category='Esports',
+                ),
+                'pf2': kairos_md_market(
+                    'pf2',
+                    ROUNDS['question'],
+                    ['Over 21.5', 'Under 21.5'],
+                    event_id='cs2-str4-masq-2026-10-07',
+                    category='Esports',
+                ),
+            },
+            'misses': [],
+        },
+    )
+    result = await kairos_relations()
+    [relation] = result.relations
+    assert relation.relation_id == 'kairos:polymarket:601:predictfun:pf1'
+    assert relation.spread_type == 'same_event'
+    assert relation.market_b['outcomes'] == ['NEMI1', 'LAVKED']
+    assert relation.analysis_b['evidence'][:2] == ['same question', 'same event']
+    assert relation.analysis_b['kairos_categories'] == ['Sports']
+    [(_, reason)] = result.rejected
+    assert reason.startswith('different events')
+
+
+async def test_hyperliquid_team_names_come_from_the_title(http) -> None:
+    kalshi = kalshi_market(
+        'KXNFLGAME-26OCT11LVNE-LV', 'Las Vegas', occurrence='2026-10-11T23:00:00Z'
+    )
+    http.get(
+        f'{DATA_API}/matched-markets',
+        kairos_page(
+            [
+                kairos_any_pair(
+                    ('hyperliquid', '8764', 'NFL'),
+                    ('kalshi', kalshi['ticker'], 'Las Vegas wins'),
+                ),
+            ]
+        ),
+    )
+    http.get(f'{venues.KALSHI_API}/markets', {'markets': [kalshi]})
+    http.add(
+        'POST',
+        f'{MARKET_DATA_API}/v1/markets/batch',
+        {
+            'markets': {
+                '8764': kairos_md_market(
+                    '8764',
+                    'NFL Regular Season: Las Vegas Raiders v New England Patriots',
+                    ['Raiders', 'Patriots'],
+                    event_id='8764',
+                    expires_at='2026-10-11T23:00:00Z',
+                ),
+            },
+            'misses': [],
+        },
+    )
+    [relation] = (await kairos_relations()).relations
+    assert (
+        relation.relation_id
+        == 'kairos:kalshi:KXNFLGAME-26OCT11LVNE-LV:hyperliquid:8764'
+    )
+    assert (
+        relation.market_a['venue'] == 'kalshi'
+        and relation.market_b['venue'] == 'hyperliquid'
+    )
+    assert relation.spread_type == 'same_event'
+    assert relation.market_b['outcomes'] == ['Raiders', 'Patriots']
+
+
+async def test_venue_filter(http) -> None:
+    http.get(f'{DATA_API}/matched-markets', kairos_page([]))
+    result = await kairos_relations(venues=('kalshi', 'polymarket'))
+    assert http.requests[0].url.params['provider'] == 'kalshi'
+    assert result.relations == []
+    with pytest.raises(ValueError):
+        await kairos_relations(venues=('kalshi', 'opinion'))

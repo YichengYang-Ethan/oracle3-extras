@@ -14,6 +14,7 @@ from oracle3_extras.cli._common import echo_json, run, scan_options
 from oracle3_extras.market.archive import load_archive, started_between, update_archive
 from oracle3_extras.market.kairos import (
     MIN_SIMILARITY,
+    VENUES,
     KairosRelations,
     check_settlements,
     history_summary,
@@ -36,23 +37,55 @@ ARCHIVE = click.Path(dir_okay=False, path_type=Path)
 @click.option(
     '--include-closed', is_flag=True, help='Keep pairs whose markets no longer trade.'
 )
+@click.option(
+    '--venues',
+    default=None,
+    help=(
+        'Comma-separated venues whose pairs to include [default: all four; '
+        '"sync" writes kalshi,polymarket, the venues oracle3 prices].'
+    ),
+)
 @click.pass_context
 def kairos(
-    ctx: click.Context, min_similarity: float | None, include_closed: bool
+    ctx: click.Context,
+    min_similarity: float | None,
+    include_closed: bool,
+    venues: str | None,
 ) -> None:
     """Kairos's cross-venue matched markets (https://kairos.trade) as oracle3 relations.
 
-    Uses Kairos's public Data API; set KAIROS_CLIENT_ID, KAIROS_API_KEY and
-    KAIROS_API_SECRET for higher rate limits.
+    Covers every venue Kairos matches: Kalshi, Polymarket, Predict.fun and
+    Hyperliquid. Uses Kairos's public APIs; set KAIROS_CLIENT_ID,
+    KAIROS_API_KEY and KAIROS_API_SECRET for higher rate limits and to size
+    Predict.fun trades with Kairos fee quotes.
     """
-    ctx.obj = {'min_similarity': min_similarity, 'include_closed': include_closed}
+    chosen = None
+    if venues is not None:
+        chosen = tuple(v.strip().lower() for v in venues.split(',') if v.strip())
+        unknown = sorted(set(chosen) - set(VENUES))
+        if unknown or len(chosen) < 2:
+            raise click.BadParameter(
+                f'pick at least two of {", ".join(VENUES)}', param_hint='--venues'
+            )
+    ctx.obj = {
+        'min_similarity': min_similarity,
+        'include_closed': include_closed,
+        'venues': chosen,
+    }
 
 
-def _load(options: dict[str, Any]) -> KairosRelations:
+#: The venues oracle3's own tools price; ``sync`` writes only their pairs by default.
+ORACLE3_VENUES = ('kalshi', 'polymarket')
+
+
+def _load(
+    options: dict[str, Any], default: tuple[str, ...] = VENUES
+) -> KairosRelations:
     return run(
         kairos_relations(
             min_similarity=options['min_similarity'],
             include_closed=options['include_closed'],
+            venues=options['venues'] or default,
         )
     )
 
@@ -61,20 +94,23 @@ def _row(relation: MarketRelation) -> dict[str, Any]:
     a, b = relation.market_a, relation.market_b
     outcomes = b.get('outcomes') or []
     index = 0 if relation.spread_type == 'same_event' else 1
+    first = a.get('yes_outcome') or (a.get('outcomes') or [None])[0]
     return {
         'relation_id': relation.relation_id,
         'relation': relation.spread_type,
         'similarity': relation.confidence,
-        'kalshi': {
-            'ticker': a.get('market_id'),
-            'title': a.get('name'),
-            'yes_outcome': a.get('yes_outcome'),
+        'categories': relation.analysis_b.get('kairos_categories', []),
+        'market_a': {
+            'venue': a.get('venue'),
+            'market_id': a.get('market_id'),
+            'name': a.get('name'),
+            'first_outcome': first,
         },
-        'polymarket': {
+        'market_b': {
+            'venue': b.get('venue'),
             'market_id': b.get('market_id'),
-            'question': b.get('name'),
+            'name': b.get('name'),
             'matching_outcome': outcomes[index] if index < len(outcomes) else None,
-            'slug': b.get('slug'),
         },
         'evidence': relation.analysis_b.get('evidence', []),
         'warnings': relation.analysis_b.get('warnings', []),
@@ -94,7 +130,7 @@ def _row(relation: MarketRelation) -> dict[str, Any]:
 )
 @click.pass_obj
 def pairs(options: dict[str, Any], show_rejected: bool, limit: int | None) -> None:
-    """List Kalshi–Polymarket pairs with their outcomes lined up."""
+    """List Kairos pairs with their outcomes lined up on both venues."""
     result = _load(options)
     payload: dict[str, Any] = {
         'ok': True,
@@ -104,10 +140,16 @@ def pairs(options: dict[str, Any], show_rejected: bool, limit: int | None) -> No
     if show_rejected:
         payload['rejected'] = [
             {
-                'kalshi': pair.side('kalshi').market_id,  # type: ignore[union-attr]
-                'polymarket': pair.side('polymarket').market_id,  # type: ignore[union-attr]
-                'kalshi_title': pair.side('kalshi').title,  # type: ignore[union-attr]
-                'polymarket_title': pair.side('polymarket').title,  # type: ignore[union-attr]
+                'a': {
+                    'venue': pair.a.provider,
+                    'market_id': pair.a.market_id,
+                    'title': pair.a.title,
+                },
+                'b': {
+                    'venue': pair.b.provider,
+                    'market_id': pair.b.market_id,
+                    'title': pair.b.title,
+                },
                 'similarity': pair.similarity,
                 'reason': reason,
             }
@@ -136,9 +178,10 @@ def sync(options: dict[str, Any], store: Path, no_prune: bool, dry_run: bool) ->
 
     oracle3's list_relations and check_constraint_live tools read the store, so
     agents can use the pairs right away. Relations keep their status and
-    validation across syncs.
+    validation across syncs. oracle3 prices Kalshi and Polymarket, so only
+    their pairs are written unless --venues names others.
     """
-    result = _load(options)
+    result = _load(options, ORACLE3_VENUES)
     written = (
         None if dry_run else save_relations(result.relations, store, prune=not no_prune)
     )
@@ -155,6 +198,13 @@ def sync(options: dict[str, Any], store: Path, no_prune: bool, dry_run: bool) ->
 
 @kairos.command()
 @scan_options
+@click.option(
+    '--max-confirm',
+    type=click.IntRange(min=0),
+    default=50,
+    show_default=True,
+    help='Predict.fun pairs to confirm with Kairos fee quotes (largest edges first).',
+)
 @click.pass_obj
 def scan(
     options: dict[str, Any],
@@ -164,6 +214,7 @@ def scan(
     min_edge: float,
     top: int,
     no_depth: bool,
+    max_confirm: int,
 ) -> None:
     """Check every aligned pair for a cross-venue edge after fees (read-only)."""
     result = _load(options)
@@ -175,6 +226,7 @@ def scan(
             depth=not no_depth,
             max_contracts=max_contracts,
             min_edge=min_edge,
+            max_confirm=max_confirm,
         )
     )
     echo_json({'ok': True, 'catalog': result.summary(), **report.to_dict(top=top)})

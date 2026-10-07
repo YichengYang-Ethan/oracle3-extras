@@ -158,7 +158,7 @@ async def test_scan_finds_sizes_and_skips(http) -> None:
     assert summary['relations'] == 4 and summary['quoted'] == 2
     assert summary['skipped'] == {
         'relation type cointegration is not checked': 1,
-        'markets need venue (kalshi or polymarket) and market_id': 1,
+        'markets need venue and market_id': 1,
     }
     [found] = report.opportunities()
     assert found.relation.relation_id == 'r1'
@@ -185,3 +185,140 @@ async def test_top_of_book_only(http) -> None:
     assert [i.relation.relation_id for i in report.opportunities()] == ['r1']
     assert report.opportunities()[0].depth is None
     assert not http.calls(f'{venues.CLOB_API}/books')
+
+
+# ── Predict.fun legs (through Kairos) ────────────────────────────────────
+
+from oracle3_extras.market.kairos import (  # noqa: E402
+    EXECUTION_API,
+    MARKET_DATA_API,
+    KairosClient,
+    KairosCredentials,
+)
+from tests.factories import kairos_md_market  # noqa: E402
+
+PM_TWIN = gamma_market(
+    '11',
+    'Texans vs. Titans',
+    ['Texans', 'Titans'],
+    slug='nfl-hou-ten-2026-10-11',
+    best_bid=0.60,
+    best_ask=0.62,
+    tokens=('pm-a', 'pm-b'),
+)
+PF_TWIN = kairos_md_market(
+    'pf11',
+    'Texans vs. Titans',
+    ['HOU', 'TEN'],
+    event_id='nfl-hou-ten-2026-10-11',
+    fee_bps=200,
+)
+TWIN = rel(
+    'twin',
+    {'venue': 'polymarket', 'market_id': '11'},
+    {'venue': 'predictfun', 'market_id': 'pf11'},
+)
+HL = rel(
+    'hl',
+    {'venue': 'polymarket', 'market_id': '11'},
+    {'venue': 'hyperliquid', 'market_id': '8764'},
+)
+
+
+def route_twin(http, *, fee_quote=None) -> None:
+    http.get(f'{venues.GAMMA_API}/markets', [PM_TWIN])
+    http.add(
+        'POST',
+        f'{MARKET_DATA_API}/v1/markets/batch',
+        {'markets': {'pf11': PF_TWIN}, 'misses': []},
+    )
+    # Last trades: Texans 0.30 on Predict.fun, so YES on Polymarket's Titans side + Texans on Predict.fun looks cheap.
+    http.get(
+        f'{MARKET_DATA_API}/v1/marks',
+        {
+            'marks': [
+                {'contract_id': 'pf11', 'token_id': 'pf11-t0', 'price': 30},
+                {'contract_id': 'pf11', 'token_id': 'pf11-t1', 'price': 70},
+            ]
+        },
+    )
+    http.add(
+        'POST',
+        f'{venues.CLOB_API}/books',
+        [
+            {'asset_id': 'pm-a', 'asks': [{'price': '0.62', 'size': '500'}]},
+            {'asset_id': 'pm-b', 'asks': [{'price': '0.40', 'size': '500'}]},
+        ],
+    )
+    if fee_quote is not None:
+        http.get(f'{EXECUTION_API}/orders/fee-quote', fee_quote)
+
+
+async def test_predict_fun_without_a_key_stays_unconfirmed(http) -> None:
+    route_twin(http)
+    report = await scan_relations([TWIN, HL], client=KairosClient(credentials=None))
+    twin, hl = report.items
+    assert twin.indicative and twin.best.description == 'NO on A + YES on B'
+    assert twin.skipped.startswith('unconfirmed') and not twin.opportunity
+    assert hl.skipped == 'no live quotes for Hyperliquid yet'
+    assert report.summary()['priced_from_last_trades'] == 1
+
+
+async def test_predict_fun_legs_are_sized_with_kairos_fee_quotes(http) -> None:
+    def quote(request):
+        size = float(request.url.params['quantity'])
+        assert request.url.params['token_id'] == 'pf11-t0'
+        assert request.headers['X-Api-Key'] == 'k'
+        if size > 50:
+            return {
+                'pricing_unavailable': False,
+                'sufficient_liquidity': False,
+                'avg_price_usdc': '0.31',
+                'filled_size': '50',
+                'exchange_fee_usdc': '0',
+                'platform_fee_usdc': '0',
+            }
+        return {
+            'pricing_unavailable': False,
+            'sufficient_liquidity': True,
+            'avg_price_usdc': '0.31',
+            'filled_size': str(size),
+            'exchange_fee_usdc': f'{0.02 * 0.31 * size:.6f}',
+            'platform_fee_usdc': '0.01',
+        }
+
+    route_twin(http, fee_quote=quote)
+    client = KairosClient(credentials=KairosCredentials('id', 'k', 's'))
+    report = await scan_relations([TWIN], client=client)
+    [item] = report.items
+    assert item.opportunity
+    assert item.depth.contracts == 50 and item.depth.stopped_by == 'book'
+    pf_leg = [leg for leg in item.depth.legs if leg['venue'] == 'predictfun'][0]
+    assert pf_leg['average_price'] == 0.31
+    # 50 × (1 − 0.40 − 0.31) minus both venues' fees
+    assert item.depth.net_edge == pytest.approx(50 * 0.29 - item.depth.fees)
+
+
+async def test_untraded_predict_fun_market_is_skipped_not_quoted(http) -> None:
+    route_twin(http)
+    http.routes[('GET', f'{MARKET_DATA_API}/v1/marks')] = [{'marks': []}]
+    report = await scan_relations([TWIN], client=KairosClient(credentials=None))
+    [item] = report.items
+    assert item.check is None and item.skipped == 'no Predict.fun trades yet'
+
+
+async def test_a_venue_outage_skips_its_relations_and_keeps_scanning(http) -> None:
+    route_twin(http)
+    http.routes[('GET', f'{MARKET_DATA_API}/v1/marks')] = [(503, {'detail': 'down'})]
+    report = await scan_relations([TWIN], client=KairosClient(credentials=None))
+    [item] = report.items
+    assert item.skipped == 'predictfun data unavailable'
+
+
+async def test_only_the_largest_last_trade_edges_are_confirmed(http) -> None:
+    route_twin(http, fee_quote={'pricing_unavailable': True})
+    client = KairosClient(credentials=KairosCredentials('id', 'k', 's'))
+    report = await scan_relations([TWIN], client=client, max_confirm=0)
+    [item] = report.items
+    assert item.skipped == 'unconfirmed: beyond the 0 largest last-trade edges'
+    assert not [r for r in http.requests if 'fee-quote' in str(r.url)]

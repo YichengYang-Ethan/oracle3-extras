@@ -1,4 +1,5 @@
-"""Batched, read-only market data from the public Kalshi and Polymarket APIs.
+"""Batched, read-only market data from the public Kalshi and Polymarket APIs,
+and Predict.fun's fee schedule.
 
 ``oracle3.mcp_server.venues`` reads one market per call, which suits an agent
 checking one relation. Scanning thousands of relations needs batches: Kalshi's
@@ -15,7 +16,8 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from decimal import Decimal
+from typing import Any, ClassVar
 
 from oracle3.arbitrage import Quote
 from oracle3.fees import KalshiSchedule, PolymarketSchedule
@@ -23,6 +25,9 @@ from oracle3.fees import KalshiSchedule, PolymarketSchedule
 from oracle3_extras._http import chunks, gather_limited, new_client, request_json
 
 __all__ = [
+    'PREDICTFUN_DEFAULT_FEE_BPS',
+    'PredictFunSchedule',
+    'predictfun_quote',
     'CLOB_API',
     'GAMMA_API',
     'KALSHI_API',
@@ -297,3 +302,71 @@ def _levels(raw: Any) -> list[Level]:
         if 0.0 < p < 1.0 and q > 0:
             out.append((p, q))
     return out
+
+
+# ── Predict.fun (through Kairos) ─────────────────────────────────────────
+
+#: Taker fee Kairos assumes when a Predict.fun market publishes none (2%).
+PREDICTFUN_DEFAULT_FEE_BPS = 200
+
+
+@dataclass(frozen=True)
+class PredictFunSchedule:
+    """Predict.fun taker fee: ``rate × min(p, 1 − p) × shares``; makers pay nothing.
+
+    Published in Kairos's fee documentation; ``rate_bps`` comes from each
+    market's metadata. It plugs into ``oracle3.arbitrage.check_constraint``
+    like oracle3's own Kalshi and Polymarket schedules.
+    """
+
+    rate_bps: int = PREDICTFUN_DEFAULT_FEE_BPS
+
+    venue: ClassVar[str] = 'predictfun'
+
+    def fee(
+        self, price: float | Decimal, contracts: float | Decimal, *, maker: bool = False
+    ) -> Decimal:
+        p = Decimal(str(price))
+        if not Decimal('0') < p < Decimal('1'):
+            raise ValueError(f'price must be strictly between 0 and 1, got {price}')
+        if maker:
+            return Decimal('0')
+        raw = (
+            Decimal(self.rate_bps)
+            / Decimal(10_000)
+            * min(p, 1 - p)
+            * Decimal(str(contracts))
+        )
+        return raw.quantize(Decimal('0.000001'))
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            'venue': self.venue,
+            'formula': 'rate * min(p, 1 - p) * shares, takers only',
+            'taker_rate_bps': self.rate_bps,
+        }
+
+
+def predictfun_quote(
+    market: Mapping[str, Any], marks: Mapping[tuple[str, str], float]
+) -> Quote:
+    """An indicative quote from each outcome's last trade, for screening only.
+
+    ``market`` is Kairos metadata in Polymarket shape
+    (:func:`oracle3_extras.market.kairos.markets.as_polymarket_shape`).
+    """
+    market_id = str(market.get('id') or '')
+    tokens = polymarket_token_ids(market)
+    first = marks.get((market_id, tokens[0])) if tokens else None
+    second = marks.get((market_id, tokens[1])) if len(tokens) > 1 else None
+    if second is None and first is not None:
+        second = round(1.0 - first, 6)
+    rate = market.get('feeRateBps')
+    return Quote(
+        market_id=market_id,
+        venue='predictfun',
+        yes_ask=_price(first),
+        no_ask=_price(second),
+        schedule=PredictFunSchedule(int(rate) if rate else PREDICTFUN_DEFAULT_FEE_BPS),  # type: ignore[arg-type]
+        title=str(market.get('question') or ''),
+    )

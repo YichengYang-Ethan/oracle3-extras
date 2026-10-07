@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from oracle3_extras.market.align import align_kalshi_polymarket, words
@@ -348,3 +350,37 @@ def test_postponed_one_day_depends_on_dated_rules(rules: str, aligned: bool) -> 
 def test_words_drop_noise_and_expand_abbreviations() -> None:
     assert words('CA Boca Juniors') == {'boca', 'juniors'}
     assert words('Grand\xa0Rapids') == {'grand', 'rapids'}
+
+
+def test_rain_delayed_tennis_match_is_kept_with_a_warning(monkeypatch) -> None:
+    from oracle3_extras.market import align
+
+    monkeypatch.setattr(
+        align, '_now', lambda: datetime(2026, 10, 7, 20, tzinfo=timezone.utc)
+    )
+    kalshi = kalshi_market(
+        'KXATPMATCH-26OCT06BORDIA-BOR',
+        'Nuno Borges',
+        occurrence='2026-10-06T07:00:00Z',
+        rules='If Nuno Borges wins the Borges vs Diaz Acosta professional tennis match '
+        'in the 2026 ATP Shanghai Round Of 128 after a ball has been played, then the '
+        'market resolves to Yes.',
+        close_time='2026-10-20T04:00:00Z',
+    )
+    poly = gamma_market(
+        '5320334',
+        'Shanghai Rolex Masters: Nuno Borges vs Facundo Diaz Acosta',
+        ['Nuno Borges', 'Facundo Diaz Acosta'],
+        slug='atp-borges-diazaco-2026-10-08',
+        start='2026-10-08 04:00:00+00',
+    )
+    result = align_kalshi_polymarket(kalshi, poly)
+    assert result.aligned, result.problem
+    assert result.warnings[0].startswith(
+        'postponed: Kalshi scheduled it for 2026-10-06'
+    )
+    # The same pair before the original date has passed is still two different days.
+    monkeypatch.setattr(
+        align, '_now', lambda: datetime(2026, 10, 6, 8, tzinfo=timezone.utc)
+    )
+    assert align_kalshi_polymarket(kalshi, poly).problem.startswith('different dates')

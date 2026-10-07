@@ -21,6 +21,7 @@ the other, so prices can move in between.
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -34,6 +35,8 @@ from oracle3.market.relations import MarketRelation
 
 from oracle3_extras import venues
 from oracle3_extras._http import APIError
+from oracle3_extras.market.kairos.client import KairosClient
+from oracle3_extras.market.kairos.markets import as_polymarket_shape
 
 __all__ = [
     'SUPPORTED_RELATIONS',
@@ -46,7 +49,11 @@ __all__ = [
 
 #: Relation types that ``scan_relations`` can check for two markets.
 SUPPORTED_RELATIONS = ('same_event', 'complement', 'implication', 'exclusivity')
-VENUES = ('kalshi', 'polymarket')
+#: Venues ``scan_relations`` can price: Kalshi and Polymarket from their own
+#: APIs, Predict.fun through Kairos (last trades to screen, fee quotes to size).
+VENUES = ('kalshi', 'polymarket', 'predictfun')
+#: Basket sizes tried when a Predict.fun leg is priced with Kairos fee quotes.
+QUOTE_SIZES = (10, 25, 50, 100, 250)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +94,9 @@ class ScanItem:
     check: ConstraintCheck | None = None
     depth: DepthResult | None = None
     skipped: str = ''
+    #: Priced at the top of the book from last trades (Predict.fun), so only an
+    #: order-book check can make it an opportunity.
+    indicative: bool = False
 
     @property
     def best(self) -> Basket | None:
@@ -97,7 +107,9 @@ class ScanItem:
         """An edge after fees that survived the order-book check, if one ran."""
         if self.skipped or self.check is None or not self.check.profitable_after_fees:
             return False
-        return self.depth is None or self.depth.net_edge > 0
+        if self.depth is None:
+            return not self.indicative
+        return self.depth.net_edge > 0
 
     def to_dict(self) -> dict[str, Any]:
         best = self.best
@@ -129,6 +141,7 @@ class ScanItem:
             if self.depth
             else None,
             'warnings': list(self.relation.analysis_b.get('warnings') or []),
+            'indicative': self.indicative,
             'skipped': self.skipped or None,
         }
 
@@ -167,6 +180,7 @@ class ScanReport:
                 if i.check.profitable_after_fees  # type: ignore[union-attr]
             ),
             'opportunities': len(self.opportunities()),
+            'priced_from_last_trades': sum(1 for i in checked if i.indicative),
             'skipped': dict(
                 Counter(i.skipped.split(':')[0] for i in self.items if i.skipped)
             ),
@@ -283,38 +297,93 @@ def walk_books(
 # ── Scan ─────────────────────────────────────────────────────────────────
 
 
+_KNOWN_VENUES = (*VENUES, 'hyperliquid')
+
+
 def _ref(market: Mapping[str, Any]) -> tuple[str, str] | None:
     venue = str(market.get('venue') or market.get('platform') or '').lower()
     market_id = str(market.get('market_id') or '')
-    return (venue, market_id) if venue in VENUES and market_id else None
+    return (venue, market_id) if venue in _KNOWN_VENUES and market_id else None
 
 
 async def _quotes(
-    refs: Iterable[tuple[str, str]],
-) -> tuple[dict[tuple[str, str], Quote], dict[tuple[str, str], str], dict[str, Any]]:
+    refs: Iterable[tuple[str, str]], client: KairosClient
+) -> tuple[
+    dict[tuple[str, str], Quote],
+    dict[tuple[str, str], str],
+    dict[str, Any],
+    dict[str, dict[str, Any]],
+]:
     refs = set(refs)
     tickers = [m for v, m in refs if v == 'kalshi']
     poly_ids = [m for v, m in refs if v == 'polymarket']
-    kalshi = await venues.kalshi_markets(tickers)
-    series = await venues.kalshi_series({t.split('-')[0] for t in kalshi})
-    poly = await venues.polymarket_markets(poly_ids)
+    pf_ids = [m for v, m in refs if v == 'predictfun']
+    unavailable: dict[str, str] = {}
+
+    async def fetch(venue: str, job: Any, default: Any) -> Any:
+        """One venue's data; a failure costs that venue's relations, not the scan."""
+        if not job:
+            return default
+        try:
+            return await job
+        except APIError as exc:
+            logger.warning('%s data unavailable: %s', venue, exc)
+            unavailable[venue] = str(exc)
+            return default
+
+    started = time.monotonic()
+    kalshi = await fetch('kalshi', tickers and venues.kalshi_markets(tickers), {})
+    series = await fetch(
+        'kalshi', kalshi and venues.kalshi_series({t.split('-')[0] for t in kalshi}), {}
+    )
+    poly = await fetch(
+        'polymarket', poly_ids and venues.polymarket_markets(poly_ids), {}
+    )
+    found = await fetch(
+        'predictfun', pf_ids and client.markets('predictfun', pf_ids), {}
+    )
+    predictfun = {m: as_polymarket_shape(v, 'predictfun') for m, v in found.items()}
+    # One mark per market: the second outcome's book mirrors the first's, so its
+    # price is taken as 1 minus the first (screening only).
+    firsts = [
+        (m, venues.polymarket_token_ids(v)[0])
+        for m, v in predictfun.items()
+        if venues.polymarket_token_ids(v)
+    ]
+    marks = await fetch('predictfun', firsts and client.marks('predictfun', firsts), {})
+    logger.info('Quotes for %d markets in %.0fs', len(refs), time.monotonic() - started)
     quotes: dict[tuple[str, str], Quote] = {}
     problems: dict[tuple[str, str], str] = {}
+    raw_by_venue = {'kalshi': kalshi, 'polymarket': poly, 'predictfun': predictfun}
     for venue, market_id in refs:
-        raw = kalshi.get(market_id) if venue == 'kalshi' else poly.get(market_id)
+        raw = raw_by_venue.get(venue, {}).get(market_id)
         if raw is None:
-            problems[(venue, market_id)] = f'{venue} market not found'
+            problems[(venue, market_id)] = (
+                f'{venue} data unavailable'
+                if venue in unavailable
+                else f'{venue} market not found'
+            )
             continue
         try:
             if venue == 'kalshi':
                 quotes[(venue, market_id)] = venues.kalshi_quote(
                     raw, series.get(market_id.split('-')[0])
                 )
-            else:
+            elif venue == 'polymarket':
                 quotes[(venue, market_id)] = venues.polymarket_quote(raw)
+            else:
+                quote = venues.predictfun_quote(raw, marks)
+                if quote.yes_ask is None and quote.no_ask is None:
+                    problems[(venue, market_id)] = (
+                        'predictfun data unavailable'
+                        if venue in unavailable
+                        else 'no Predict.fun trades yet'
+                    )
+                    continue
+                quotes[(venue, market_id)] = quote
         except UnsupportedFeeSchedule as exc:
             problems[(venue, market_id)] = f'unsupported fee schedule: {exc}'
-    return quotes, problems, poly
+    return quotes, problems, poly, predictfun
 
 
 async def _books(
@@ -339,6 +408,116 @@ async def _books(
     return books
 
 
+def _book_cost(
+    asks: Sequence[venues.Level], size: float, schedule: FeeSchedule, maker: bool
+) -> tuple[float, float, float] | None:
+    """Cost, fee and worst price of buying ``size`` from ``asks``; ``None`` if too thin."""
+    left, cost, fee, worst = size, 0.0, 0.0, 0.0
+    for price, available in asks:
+        take = min(left, available)
+        cost += price * take
+        fee += float(schedule.fee(Decimal(str(price)), Decimal(str(take)), maker=maker))
+        worst, left = price, left - take
+        if left <= 1e-9:
+            return cost, fee, worst
+    return None
+
+
+async def _quoted_depth(
+    basket: Basket,
+    books: Mapping[tuple[str, str], venues.Book],
+    schedules: Mapping[tuple[str, str], FeeSchedule],
+    predictfun: Mapping[str, Mapping[str, Any]],
+    client: KairosClient,
+    *,
+    maker: bool,
+    max_contracts: float | None,
+    min_edge: float,
+) -> DepthResult | None:
+    """Size a basket with a Predict.fun leg: Kairos fee quotes for that leg, books for the rest."""
+    best: DepthResult | None = None
+    stopped = 'sizes'
+    for size in QUOTE_SIZES:
+        if max_contracts is not None and size > max_contracts:
+            stopped = 'cap'
+            break
+        legs: list[dict[str, Any]] = []
+        for leg in basket.legs:
+            if leg.venue == 'predictfun':
+                tokens = venues.polymarket_token_ids(predictfun.get(leg.market_id, {}))
+                token = (
+                    tokens[0 if leg.side == 'yes' else 1] if len(tokens) == 2 else ''
+                )
+                quote = await client.fee_quote(
+                    'predictfun', token_id=token, market_id=leg.market_id, quantity=size
+                )
+                if quote.get('unavailable') or not quote.get('sufficient_liquidity'):
+                    legs = []
+                    break
+                cost = quote['avg_price'] * size
+                legs.append(
+                    {
+                        'venue': leg.venue,
+                        'market_id': leg.market_id,
+                        'side': leg.side,
+                        'contracts': size,
+                        'average_price': round(quote['avg_price'], 6),
+                        'worst_price': None,
+                        'fee': round(quote['exchange_fee'], 6),
+                        '_cost': cost,
+                    }
+                )
+            else:
+                book = books.get((leg.venue, leg.market_id))
+                priced = (
+                    _book_cost(
+                        book.asks(leg.side),
+                        size,
+                        schedules[(leg.venue, leg.market_id)],
+                        maker,
+                    )
+                    if book
+                    else None
+                )
+                if priced is None:
+                    legs = []
+                    break
+                cost, fee, worst = priced
+                legs.append(
+                    {
+                        'venue': leg.venue,
+                        'market_id': leg.market_id,
+                        'side': leg.side,
+                        'contracts': size,
+                        'average_price': round(cost / size, 6),
+                        'worst_price': worst,
+                        'fee': round(fee, 6),
+                        '_cost': cost,
+                    }
+                )
+        if not legs:
+            stopped = 'book'
+            break
+        cost = sum(leg.pop('_cost') for leg in legs)
+        fees = sum(leg['fee'] for leg in legs)
+        net = basket.payoff_per_contract * size - cost - fees
+        if net <= min_edge * size:
+            stopped = 'edge'
+            break
+        best = DepthResult(
+            basket.description,
+            float(size),
+            round(cost, 6),
+            round(fees, 6),
+            round(net, 6),
+            legs,
+            'sizes',
+        )
+    if best is not None:
+        best.stopped_by = stopped
+    return best
+
+
 async def scan_relations(
     relations: Sequence[MarketRelation],
     *,
@@ -347,18 +526,28 @@ async def scan_relations(
     depth: bool = True,
     max_contracts: float | None = None,
     min_edge: float = 0.0,
+    client: KairosClient | None = None,
+    max_confirm: int = 50,
 ) -> ScanReport:
     """Check every relation against live prices and size the survivors.
 
     Args:
-        relations: Relations between Kalshi and Polymarket markets (any source:
-            Kairos, oracle3's relation store, or hand-written).
+        relations: Relations between Kalshi, Polymarket and Predict.fun markets
+            (any source: Kairos, oracle3's relation store, or hand-written).
+            Predict.fun legs are screened on last trades and sized with Kairos
+            fee quotes, which need a Kairos API key; without one they stay
+            unconfirmed and are never reported as opportunities.
         contracts: Size of the top-of-book check on every leg.
         maker: Price fees as resting orders instead of taker orders.
         depth: Re-check relations with an edge after fees against full order books.
         max_contracts: Cap for the order-book walk.
         min_edge: Smallest net edge per contract that counts.
+        client: Kairos client for Predict.fun data; a default one if omitted.
+        max_confirm: Most relations priced from last trades to confirm with
+            Kairos fee quotes, largest edge first. Last trades can be weeks
+            old, so most of these edges are stale; the rest stay unconfirmed.
     """
+    client = client or KairosClient()
     items = [ScanItem(relation=r) for r in relations]
     refs: dict[int, list[tuple[str, str]]] = {}
     for n, item in enumerate(items):
@@ -367,11 +556,13 @@ async def scan_relations(
         if r.spread_type not in SUPPORTED_RELATIONS:
             item.skipped = f'relation type {r.spread_type} is not checked'
         elif None in pair:
-            item.skipped = 'markets need venue (kalshi or polymarket) and market_id'
+            item.skipped = 'markets need venue and market_id'
+        elif any(ref[0] not in VENUES for ref in pair):  # type: ignore[index]
+            item.skipped = 'no live quotes for Hyperliquid yet'
         else:
             refs[n] = pair  # type: ignore[assignment]
-    quotes, problems, poly = await _quotes(
-        ref for pair in refs.values() for ref in pair
+    quotes, problems, poly, predictfun = await _quotes(
+        (ref for pair in refs.values() for ref in pair), client
     )
 
     for n, pair in refs.items():
@@ -386,6 +577,7 @@ async def scan_relations(
             contracts=contracts,
             maker=maker,
         )
+        item.indicative = any(venue == 'predictfun' for venue, _ in pair)
 
     candidates = [
         i
@@ -399,10 +591,24 @@ async def scan_relations(
         len(candidates),
     )
     if depth and candidates:
+        indicative = sorted(
+            (i for i in candidates if i.indicative),
+            key=lambda i: i.best.net_edge,  # type: ignore[union-attr]
+            reverse=True,
+        )
+        confirm = indicative[:max_confirm] if client.credentials else []
+        for item in indicative[len(confirm) :]:
+            item.skipped = (
+                'unconfirmed: Predict.fun legs need a Kairos API key'
+                if client.credentials is None
+                else f'unconfirmed: beyond the {max_confirm} largest last-trade edges'
+            )
+        candidates = [i for i in candidates if not i.indicative] + confirm
         wanted = {
             (leg.venue, leg.market_id)
             for i in candidates
             for leg in i.best.legs  # type: ignore[union-attr]
+            if leg.venue != 'predictfun'
         }
         try:
             books = await _books(wanted, poly)
@@ -413,6 +619,23 @@ async def scan_relations(
         for item in candidates:
             basket = item.best
             if basket is None:
+                continue
+            if item.indicative:
+                try:
+                    item.depth = await _quoted_depth(
+                        basket,
+                        books,
+                        schedules,
+                        predictfun,
+                        client,
+                        maker=maker,
+                        max_contracts=max_contracts,
+                        min_edge=min_edge,
+                    ) or DepthResult(basket.description, 0.0, 0.0, 0.0, 0.0, [], 'edge')
+                except APIError as exc:
+                    item.skipped = (
+                        f'unconfirmed: Kairos fee quote failed ({exc.status})'
+                    )
                 continue
             if any((leg.venue, leg.market_id) not in books for leg in basket.legs):
                 item.skipped = 'order book unavailable'
