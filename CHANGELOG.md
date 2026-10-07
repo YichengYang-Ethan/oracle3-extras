@@ -14,6 +14,9 @@
 - Commands `oracle3-extras kairos pairs | sync | scan` and `oracle3-extras scan`, and a global `--quiet`.
 - Agent skill `oracle3-kairos-cross-venue`.
 - `pytest --live` contract tests against the real APIs; doctests run with the suite.
+- Release workflow (`.github/workflows/pypi-publish.yml`): every push builds the sdist and the wheel and checks that both install and import; publishing a GitHub release uploads them to PyPI with Trusted Publishing. Setup in `.github/PYPI-SETUP.md`.
+- pre-commit hooks (ruff, formatting, YAML/TOML and whitespace checks), also run in CI.
+- CONTRIBUTING: how a feature graduates into oracle3 and how public names are renamed or removed.
 
 ### Changed
 
@@ -21,6 +24,7 @@
 - `import oracle3_extras as o3x` exposes the main entry points; the version is read from the installed package.
 - Requires oracle3 1.2.x (`oracle3>=1.2.2,<1.3`) and declares `httpx` directly.
 - New `dev` extra (tests and ruff).
+- Warnings now fail the test suite.
 
 ## [0.1.0] - 2026-10-06
 

@@ -1,0 +1,79 @@
+name: PyPI
+
+# Every push and pull request builds the sdist and the wheel, installs each in a
+# clean environment and imports it, the way pymc-extras checks its builds.
+# Publishing a GitHub release (or running this workflow by hand) also uploads
+# to PyPI with Trusted Publishing (OIDC): the PyPI publisher must name this
+# repository, this workflow (pypi-publish.yml) and the "pypi" environment.
+# One-time setup: .github/PYPI-SETUP.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and check the distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Check the version matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          tag="${GITHUB_REF_NAME#v}"
+          echo "pyproject ${version}, tag ${tag}"
+          if [ "${version}" != "${tag}" ]; then
+            echo "::error::pyproject.toml version (${version}) does not match the release tag (${tag})"
+            exit 1
+          fi
+
+      - name: Install and import the wheel and the sdist
+        run: |
+          for dist in dist/*.whl dist/*.tar.gz; do
+            env_dir="check-$(basename "${dist}")"
+            python -m venv "${env_dir}"
+            "${env_dir}/bin/pip" install --quiet "${dist}"
+            "${env_dir}/bin/python" -c "import oracle3_extras as o3x; print(o3x.__version__)"
+            "${env_dir}/bin/oracle3-extras" --version
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    name: Upload to PyPI
+    needs: build
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/oracle3-extras
+    permissions:
+      id-token: write  # required for PyPI trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

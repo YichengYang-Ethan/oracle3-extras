@@ -1,0 +1,18 @@
+# Run before committing: pre-commit run --all-files
+# CI runs the same hooks (.github/workflows/ci.yml), as pymc-extras does.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.1  # keep in step with the ruff pin in pyproject.toml
+    hooks:
+      - id: ruff
+      - id: ruff-format

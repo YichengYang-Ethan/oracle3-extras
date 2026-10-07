@@ -68,6 +68,10 @@ addopts = ["--doctest-modules"]
 asyncio_mode = "auto"
 xfail_strict = true
 markers = ["live: calls the real Kairos, Kalshi and Polymarket APIs (run with --live)"]
+# Warnings fail the suite, as in pymc-extras: oracle3-extras builds on oracle3
+# internals, so a deprecation there should surface here first. Ignore a
+# third-party warning only with a comment saying why.
+filterwarnings = ["error"]
 
 [tool.ruff]
 line-length = 88

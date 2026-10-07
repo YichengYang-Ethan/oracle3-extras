@@ -36,7 +36,39 @@ A feature can move into oracle3 when:
 - it is tested to oracle3's standard;
 - it works without a partner account (an optional key is fine).
 
-Because the namespaces match, the move changes imports, not code: `oracle3_extras.arbitrage.scan_relations` becomes `oracle3.arbitrage.scan_relations`. The extras version stays as a re-export for one minor release.
+The move follows the path pymc-extras uses with PyMC (for example `do` and `observe`, which moved into PyMC in 2023):
+
+1. Add the feature to oracle3 at the same module path with the same API, and release it.
+2. In oracle3-extras, replace the implementation with a re-export from oracle3 that raises a `FutureWarning` naming the new import, and keep a test that the warning fires.
+3. Raise the oracle3 pin in `pyproject.toml` to the release that has the feature.
+4. Delete the re-export one minor release later. (pymc-extras removed its re-exports about seven months after the move.)
+
+Because the namespaces match, users only change the import: `oracle3_extras.arbitrage.scan_relations` becomes `oracle3.arbitrage.scan_relations`.
+
+## Renaming or removing public names
+
+Keep the old name working for one minor release and warn, the way pymc-extras handles renames:
+
+```python
+# at the bottom of the module that used to define OldName
+import warnings
+
+_RENAMED = {'OldName': NewName}
+
+
+def __getattr__(name):
+    if name in _RENAMED:
+        warnings.warn(
+            f'{name} is deprecated and will be removed in the next minor '
+            f'release; use {_RENAMED[name].__name__} instead.',
+            FutureWarning,
+            stacklevel=2,
+        )
+        return _RENAMED[name]
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+```
+
+List every rename and removal in `CHANGELOG.md`.
 
 ## Development
 
@@ -44,9 +76,15 @@ Because the namespaces match, the move changes imports, not code: `oracle3_extra
 git clone https://github.com/YichengYang-Ethan/oracle3-extras.git
 cd oracle3-extras
 pip install -e ".[dev]"
-ruff check . && ruff format --check .
-pytest              # offline tests and doctests
-pytest --live       # also the contract tests against the real APIs
+pre-commit run --all-files   # ruff, formatting, YAML/TOML and whitespace checks, as in CI
+pytest                       # offline tests and doctests; warnings fail the run
+pytest --live                # also the contract tests against the real APIs
 ```
 
-Each release supports one oracle3 minor series, pinned in `pyproject.toml`; bump the pin and run the full suite when oracle3 releases a new minor version. Record every user-visible change in `CHANGELOG.md`.
+Warnings are errors in the test suite, as in pymc-extras: oracle3-extras builds on oracle3 internals, so a deprecation there should surface here first. Silence a third-party warning only in `pyproject.toml`, with a comment saying why.
+
+Each release supports one oracle3 minor series, pinned in `pyproject.toml`; when oracle3 releases a new minor version, raise the pin, run the full suite and release. Record every user-visible change in `CHANGELOG.md`.
+
+## Releasing
+
+Publishing a GitHub release uploads the package to PyPI through `.github/workflows/pypi-publish.yml`, after checking that the tag matches the version and that the wheel and the sdist install and import. The one-time PyPI and GitHub settings, and the release commands, are in [.github/PYPI-SETUP.md](.github/PYPI-SETUP.md).
