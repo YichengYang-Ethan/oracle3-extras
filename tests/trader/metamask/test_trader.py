@@ -3,18 +3,18 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from conftest import err, ok
 from oracle3.data.market_data_manager import MarketDataManager
 from oracle3.position.position_manager import PositionManager
 from oracle3.risk.risk_manager import NoRiskManager
 from oracle3.ticker.ticker import CashTicker, PolyMarketTicker
 from oracle3.trader.types import OrderFailureReason, OrderStatus, TradeSide
 
-from oracle3_extras.metamask import (
+from oracle3_extras.trader.metamask import (
     AgentWalletTrader,
     GeoblockedError,
     MainnetNotAllowedError,
 )
+from tests.trader.metamask.support import err, ok
 
 TICKER = PolyMarketTicker(symbol='T1', name='Fed cut?', token_id='T1')
 

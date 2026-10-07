@@ -4,21 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oracle3-extras"
-version = "0.1.0"
-description = "Optional and experimental integrations for oracle3, starting with execution through MetaMask Agent Wallet."
+version = "0.2.0"
+description = "Integrations and experimental features for oracle3: Kairos cross-venue pairs, live no-arbitrage scans and MetaMask Agent Wallet execution."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Yicheng Yang", email = "yy85@illinois.edu" }]
 requires-python = ">=3.10"
+# Each release is tested against one oracle3 minor series, the way pymc-extras
+# pins PyMC: oracle3-extras builds on oracle3 internals that may change.
 dependencies = [
-    "oracle3>=1.2.2",
+    "oracle3>=1.2.2,<1.3",
     "click>=8.1",
+    "httpx>=0.24",
 ]
 keywords = [
     "oracle3",
     "prediction-markets",
     "polymarket",
+    "kalshi",
+    "kairos",
+    "arbitrage",
     "metamask",
     "agent-wallet",
     "ai-agents",
@@ -39,6 +45,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["oracle3-extras[test]", "ruff==0.5.1"]
 
 [project.scripts]
 oracle3-extras = "oracle3_extras.cli:cli"
@@ -46,17 +53,21 @@ oracle3-extras = "oracle3_extras.cli:cli"
 [project.urls]
 Homepage = "https://github.com/YichengYang-Ethan/oracle3-extras"
 oracle3 = "https://github.com/YichengYang-Ethan/oracle3-prediction-market-agent"
+"Kairos API docs" = "https://app.kairos.trade/docs"
 "MetaMask Agent Wallet docs" = "https://docs.metamask.io/agent-wallet"
 
 [tool.hatch.build.targets.wheel]
 packages = ["oracle3_extras"]
 
 [tool.hatch.build.targets.sdist]
-include = ["oracle3_extras", "skills", "docs", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["oracle3_extras", "skills", "docs", "tests", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "oracle3_extras"]
+addopts = ["--doctest-modules"]
 asyncio_mode = "auto"
+xfail_strict = true
+markers = ["live: calls the real Kairos, Kalshi and Polymarket APIs (run with --live)"]
 
 [tool.ruff]
 line-length = 88
@@ -67,8 +78,8 @@ select = ["E", "F", "I", "B", "UP", "S"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "S106", "S603"]
-"oracle3_extras/metamask/client.py" = ["S603"]
+"tests/**" = ["S101", "S106", "S603"]
+"oracle3_extras/trader/metamask/client.py" = ["S603"]
 
 [tool.ruff.format]
 quote-style = "single"

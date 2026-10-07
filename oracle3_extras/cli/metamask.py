@@ -1,7 +1,4 @@
-"""Command-line entry point: ``oracle3-extras <integration> <command>``.
-
-Every command prints JSON so agents and scripts can read it.
-"""
+"""``oracle3-extras metamask ...``: trade Polymarket through MetaMask Agent Wallet."""
 
 from __future__ import annotations
 
@@ -12,13 +9,9 @@ from typing import Any
 
 import click
 
-from oracle3_extras import __version__
-from oracle3_extras.metamask.client import AgentWalletClient
-from oracle3_extras.metamask.errors import AgentWalletError
-
-
-def _echo(payload: Any) -> None:
-    click.echo(json.dumps(payload, indent=2, default=str))
+from oracle3_extras.cli._common import echo_json as _echo
+from oracle3_extras.trader.metamask.client import AgentWalletClient
+from oracle3_extras.trader.metamask.errors import AgentWalletError
 
 
 def _error(exc: AgentWalletError) -> dict[str, str]:
@@ -32,12 +25,6 @@ def _fail(exc: AgentWalletError) -> None:
 
 
 @click.group()
-@click.version_option(__version__, prog_name='oracle3-extras')
-def cli() -> None:
-    """Optional and experimental integrations for oracle3."""
-
-
-@cli.group()
 @click.option(
     '--mm', 'executable', default='mm', show_default=True, help='Path to the mm CLI.'
 )
@@ -217,7 +204,7 @@ def run(
     from oracle3.data.live.live_data_source import LivePolyMarketDataSource
     from oracle3.strategy.loader import load_strategy_class
 
-    from oracle3_extras.metamask.runner import run_live_agent_wallet_trading
+    from oracle3_extras.trader.metamask.runner import run_live_agent_wallet_trading
 
     try:
         strategy_cls = load_strategy_class(strategy_ref)
@@ -247,7 +234,3 @@ def run(
     except AgentWalletError as exc:
         _fail(exc)
     _echo({'ok': True, 'session': summary})
-
-
-if __name__ == '__main__':
-    cli()

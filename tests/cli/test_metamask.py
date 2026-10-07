@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 from click.testing import CliRunner
-from conftest import ok
 
 from oracle3_extras.cli import cli
+from tests.trader.metamask.support import ok
 
 
 def _invoke(fake_mm, *args: str):

@@ -26,8 +26,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from oracle3_extras.metamask.attribution import Attribution
-from oracle3_extras.metamask.errors import (
+from oracle3_extras.trader.metamask.attribution import Attribution
+from oracle3_extras.trader.metamask.errors import (
     CLINotInstalledError,
     CLIProtocolError,
     CLITimeoutError,
@@ -156,7 +156,7 @@ class AgentWalletClient:
             on wallet jobs, so the default is generous.
         env: Extra environment variables for every call.
         attribution: Integration attribution; see
-            :mod:`oracle3_extras.metamask.attribution`.
+            :mod:`oracle3_extras.trader.metamask.attribution`.
     """
 
     executable: str = 'mm'

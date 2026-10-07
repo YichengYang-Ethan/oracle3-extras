@@ -26,7 +26,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from oracle3_extras import __version__
+from oracle3_extras._version import __version__
 
 INTEGRATION_ID = 'oracle3'
 ATTRIBUTION_ENV = 'ORACLE3_ATTRIBUTION'

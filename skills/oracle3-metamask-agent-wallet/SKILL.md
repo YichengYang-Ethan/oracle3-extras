@@ -10,7 +10,7 @@ Use this skill when the user wants to act on an oracle3 finding (a mispriced mar
 ## Tools
 
 - oracle3 MCP server (`uvx oracle3 mcp`): `search_markets`, `get_market`, `get_quote`, `get_orderbook`, `check_constraint_live`, `fair_value`, `trading_fee`. All read-only.
-- `oracle3-extras metamask ...` (`pip install oracle3-extras`): `doctor`, `mode`, `quote`, `place`, `positions`, `redeem`. Every command prints JSON.
+- `oracle3-extras metamask ...` (`pip install git+https://github.com/YichengYang-Ethan/oracle3-extras.git`): `doctor`, `mode`, `quote`, `place`, `positions`, `redeem`. Every command prints JSON.
 - The `mm` CLI underneath (`npm install -g @metamask/agent-wallet`).
 
 ## Before the first order

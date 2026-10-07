@@ -16,8 +16,8 @@ from oracle3.live.live_trader import run_live_trading
 from oracle3.position.position_manager import PositionManager
 from oracle3.risk.risk_manager import StandardRiskManager
 
-from oracle3_extras.metamask.client import AgentWalletClient
-from oracle3_extras.metamask.trader import AgentWalletTrader
+from oracle3_extras.trader.metamask.client import AgentWalletClient
+from oracle3_extras.trader.metamask.trader import AgentWalletTrader
 
 if TYPE_CHECKING:
     from oracle3.alerts.alerter import Alerter

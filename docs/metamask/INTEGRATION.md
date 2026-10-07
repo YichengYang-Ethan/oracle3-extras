@@ -1,14 +1,14 @@
 # oracle3 × MetaMask Agent Wallet: integration notes and proposal
 
-Version 0.1.0 · Maintainer: Yicheng Yang (yy85@illinois.edu)
+Version 0.2.0 · Maintainer: Yicheng Yang (yy85@illinois.edu)
 
-This document describes how `oracle3_extras.metamask` uses MetaMask Agent Wallet, how it attributes the orders it routes, and what would make the integration better on both sides. Everything about the `mm` CLI below was checked against the published `@metamask/agent-wallet` 7.0.0 package and the Agent Wallet documentation.
+This document describes how `oracle3_extras.trader.metamask` (also importable as `oracle3_extras.metamask`) uses MetaMask Agent Wallet, how it attributes the orders it routes, and what would make the integration better on both sides. Everything about the `mm` CLI below was checked against the published `@metamask/agent-wallet` 7.0.0 package and the Agent Wallet documentation.
 
 ## 1. What the integration does
 
 oracle3 is an open-source trading engine and MCP server for prediction markets: it maps relations between event contracts, prices every leg under the venue's fee schedule, and finds prices that break probability bounds after fees. Until now, live Polymarket execution in oracle3 required a raw private key.
 
-`oracle3_extras.metamask` replaces that key with Agent Wallet:
+`oracle3_extras.trader.metamask` replaces that key with Agent Wallet:
 
 - `AgentWalletTrader` implements oracle3's `Trader` interface, so every existing oracle3 strategy can execute through Agent Wallet without changes.
 - `AgentWalletClient` wraps the `mm` CLI's JSON envelope with typed results and errors.
@@ -78,8 +78,8 @@ Open-source connectors that share fees with venues show what works and what does
 
 | | Scope | Status |
 |---|---|---|
-| M1 | Client, trader, CLI, agent skill; 45 tests against a scripted `mm` | Done locally |
-| M2 | End-to-end testnet run with a real Agent Wallet session; public repository and PyPI release | Next |
+| M1 | Client, trader, CLI, agent skill; 46 tests against a scripted `mm` | Done |
+| M2 | End-to-end testnet run with a real Agent Wallet session; PyPI release | Next (repository is public) |
 | M3 | Attribution live once A or B ships; a jointly written integration guide | Depends on MetaMask |
 | M4 | A read-only `mm` plugin exposing oracle3's analytics inside the CLI (plugins cannot reach the predict service, so execution stays in the skill and trader) | Planned |
 | M5 | Usage review and referral or sponsorship terms | After M2–M3 |

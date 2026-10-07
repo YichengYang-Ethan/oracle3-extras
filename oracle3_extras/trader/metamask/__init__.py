@@ -9,20 +9,20 @@ session (``mm login``), an initialized wallet (``mm init``) and predict setup
 (``mm predict setup --wait``).
 """
 
-from oracle3_extras.metamask.attribution import (
+from oracle3_extras.trader.metamask.attribution import (
     ATTRIBUTION_ENV,
     INTEGRATION_ID,
     Attribution,
     metadata_bytes32,
 )
-from oracle3_extras.metamask.client import (
+from oracle3_extras.trader.metamask.client import (
     AgentWalletClient,
     GeoblockStatus,
     PlaceResult,
     PredictPosition,
     Quote,
 )
-from oracle3_extras.metamask.errors import (
+from oracle3_extras.trader.metamask.errors import (
     AgentWalletError,
     ApprovalRequiredError,
     CLINotInstalledError,
@@ -35,7 +35,7 @@ from oracle3_extras.metamask.errors import (
     PredictSetupError,
     SessionError,
 )
-from oracle3_extras.metamask.trader import AgentWalletTrader
+from oracle3_extras.trader.metamask.trader import AgentWalletTrader
 
 __all__ = [
     'ATTRIBUTION_ENV',

@@ -3,9 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from conftest import err, ok
 
-from oracle3_extras.metamask import (
+from oracle3_extras.trader.metamask import (
     AgentWalletClient,
     AgentWalletError,
     ApprovalRequiredError,
@@ -19,7 +18,8 @@ from oracle3_extras.metamask import (
     SessionError,
     metadata_bytes32,
 )
-from oracle3_extras.metamask.client import _parse_envelope
+from oracle3_extras.trader.metamask.client import _parse_envelope
+from tests.trader.metamask.support import err, ok
 
 PLACE_OK = ok(
     'place',

@@ -35,8 +35,8 @@ from oracle3.trader.types import (
     TradeSide,
 )
 
-from oracle3_extras.metamask.client import AgentWalletClient, PlaceResult
-from oracle3_extras.metamask.errors import (
+from oracle3_extras.trader.metamask.client import AgentWalletClient, PlaceResult
+from oracle3_extras.trader.metamask.errors import (
     AgentWalletError,
     ApprovalRequiredError,
     CLITimeoutError,

@@ -1,73 +1,47 @@
+"""Shared fixtures: an isolated home directory, a fake ``mm`` CLI and a mock HTTP router."""
+
 from __future__ import annotations
 
-import json
 import os
-import stat
-import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
-from oracle3_extras.metamask.attribution import Attribution
-from oracle3_extras.metamask.client import AgentWalletClient
-
-FAKE_MM = Path(__file__).with_name('fake_mm.py')
+from oracle3_extras import _http
+from tests.trader.metamask.support import FakeMM
 
 
-def ok(command: str, result: Any) -> dict[str, Any]:
-    return {'ok': True, 'data': {'command': command, 'params': {}, 'result': result}}
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        '--live',
+        action='store_true',
+        help='also run tests that call the real Kairos, Kalshi and Polymarket APIs',
+    )
 
 
-def err(code: str, message: str = 'failed', hint: str = 'fix it') -> dict[str, Any]:
-    return {'ok': False, 'error': {'code': code, 'message': message, 'hint': hint}}
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if config.getoption('--live'):
+        return
+    skip = pytest.mark.skip(reason='calls real APIs; run with --live')
+    for item in items:
+        if 'live' in item.keywords:
+            item.add_marker(skip)
 
 
-class FakeMM:
-    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.scenario_path = root / 'scenario.json'
-        self.log_path = root / 'calls.jsonl'
-        self.responses: dict[str, Any] = {}
-        self.executable = root / 'mm'
-        self.executable.write_text(
-            f'#!/bin/sh\nexec "{sys.executable}" "{FAKE_MM}" "$@"\n'
-        )
-        self.executable.chmod(self.executable.stat().st_mode | stat.S_IXUSR)
-        self.log_path.touch()
-        self._write()
-        monkeypatch.setenv('FAKE_MM_SCENARIO', str(self.scenario_path))
-        monkeypatch.setenv('FAKE_MM_LOG', str(self.log_path))
-        monkeypatch.delenv('ORACLE3_ATTRIBUTION', raising=False)
-
-    def _write(self) -> None:
-        self.scenario_path.write_text(json.dumps({'responses': self.responses}))
-
-    def respond(self, key: str, reply: Any) -> FakeMM:
-        self.responses[key] = reply
-        self._write()
-        return self
-
-    def help(self, key: str, text: str) -> FakeMM:
-        return self.respond('help:' + key, text)
-
-    def calls(
-        self, prefix: str | None = None, *, include_help: bool = False
-    ) -> list[dict[str, Any]]:
-        rows = [
-            json.loads(line)
-            for line in self.log_path.read_text().splitlines()
-            if line.strip()
-        ]
-        if not include_help:
-            rows = [r for r in rows if '--help' not in r['argv']]
-        if prefix is None:
-            return rows
-        words = prefix.split()
-        return [r for r in rows if r['argv'][: len(words)] == words]
-
-    def client(self, **kwargs: Any) -> AgentWalletClient:
-        kwargs.setdefault('attribution', Attribution())
-        return AgentWalletClient(executable=str(self.executable), **kwargs)
+@pytest.fixture(autouse=True)
+def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep a real ~/.oracle3 (kill switch, relation store) out of every test."""
+    monkeypatch.delenv('PRED_MARKET_CLI_KILL_SWITCH', raising=False)
+    monkeypatch.delenv('PRED_MARKET_CLI_KILL_SWITCH_FILE', raising=False)
+    for name in ('KAIROS_CLIENT_ID', 'KAIROS_API_KEY', 'KAIROS_API_SECRET'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    os.makedirs(tmp_path / 'home', exist_ok=True)
 
 
 @pytest.fixture
@@ -75,10 +49,58 @@ def fake_mm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeMM:
     return FakeMM(tmp_path, monkeypatch)
 
 
-@pytest.fixture(autouse=True)
-def _no_kill_switch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep a real ~/.oracle3/kill.switch from leaking into tests."""
-    monkeypatch.delenv('PRED_MARKET_CLI_KILL_SWITCH', raising=False)
-    monkeypatch.delenv('PRED_MARKET_CLI_KILL_SWITCH_FILE', raising=False)
-    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
-    os.makedirs(tmp_path / 'home', exist_ok=True)
+Reply = Any
+
+
+class Router:
+    """Answers requests with canned replies and records every request.
+
+    A reply is a JSON body, a ``(status, body)`` or ``(status, body, headers)``
+    tuple, or a function of the request returning one of those. Replies queued
+    for one URL are used in order and the last one repeats.
+    """
+
+    def __init__(self) -> None:
+        self.routes: dict[tuple[str, str], list[Reply]] = {}
+        self.requests: list[httpx.Request] = []
+
+    def add(self, method: str, url: str, *replies: Reply) -> Router:
+        self.routes.setdefault((method.upper(), url), []).extend(replies)
+        return self
+
+    def get(self, url: str, *replies: Reply) -> Router:
+        return self.add('GET', url, *replies)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        key = (request.method, str(request.url).split('?')[0])
+        queue = self.routes.get(key)
+        if not queue:
+            raise AssertionError(f'unexpected request: {request.method} {request.url}')
+        reply = queue.pop(0) if len(queue) > 1 else queue[0]
+        if callable(reply):
+            reply = reply(request)
+        status, body, headers = 200, reply, {}
+        if isinstance(reply, tuple):
+            status, body = reply[0], reply[1]
+            headers = reply[2] if len(reply) > 2 else {}
+        return httpx.Response(status, json=body, headers=headers)
+
+    def calls(self, url: str = '') -> list[httpx.Request]:
+        return [r for r in self.requests if str(r.url).startswith(url)]
+
+
+@pytest.fixture
+def http(monkeypatch: pytest.MonkeyPatch) -> Iterator[Router]:
+    """Route every HTTP request to a :class:`Router`; retries do not sleep."""
+    router = Router()
+    waits: list[float] = []
+
+    async def no_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(_http, '_sleep', no_sleep)
+    _http.set_transport(httpx.MockTransport(router))
+    router.waits = waits  # type: ignore[attr-defined]
+    yield router
+    _http.set_transport(None)
