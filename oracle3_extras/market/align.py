@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
-__all__ = ['OutcomeAlignment', 'align_kalshi_polymarket', 'words']
+__all__ = ['OutcomeAlignment', 'align_kalshi_polymarket', 'utc_time', 'words']
 
 #: Largest gap between the start times the two venues publish for one game.
 START_TOLERANCE = timedelta(hours=3)
@@ -214,7 +214,12 @@ def _outcomes(market: Mapping[str, Any]) -> list[str]:
     return [str(o) for o in raw or []]
 
 
-def _utc(value: Any) -> datetime | None:
+def utc_time(value: Any) -> datetime | None:
+    """Parse the timestamps Kalshi, Gamma and Kairos return into aware UTC datetimes.
+
+    >>> utc_time('2026-10-10 23:00:00+00').isoformat()
+    '2026-10-10T23:00:00+00:00'
+    """
     if not value:
         return None
     text = str(value).strip().replace(' ', 'T', 1).replace('Z', '+00:00')
@@ -348,7 +353,7 @@ def _schedule(
     or when Kalshi's rules do not tie the market to a date (tennis matches, for
     example, keep their market when postponed); the second case is flagged.
     """
-    start = _utc(poly.get('gameStartTime'))
+    start = utc_time(poly.get('gameStartTime'))
     if start is None:
         if ticker.day and slug.day and abs((slug.day - ticker.day).days) > 1:
             return f'different dates: Kalshi {ticker.day}, Polymarket {slug.day}', []
@@ -361,7 +366,7 @@ def _schedule(
     warnings = []
     if ticker.start is None and ticker.day is not None:
         gap = (start.astimezone(_ET).date() - ticker.day).days
-        expires = _utc(
+        expires = utc_time(
             kalshi.get('occurrence_datetime') or kalshi.get('expected_expiration_time')
         )
         hours = (expires - start).total_seconds() / 3600.0 if expires else None

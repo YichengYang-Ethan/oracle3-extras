@@ -1,6 +1,23 @@
 # Changelog
 
-## [0.2.0] - Unreleased
+## [0.3.0] - 2026-10-07
+
+### Added
+
+- `KairosClient.candles` and `KairosClient.resolutions`: candles and settlement results from Kairos's Market Data API (`md.kairos.trade`). Candles go 25 series per call with a pause between calls, and the client stops instead of retrying when Kairos keeps failing.
+- `oracle3_extras.market.archive`: a rolling archive of relations (`update_archive`, `load_archive`, `started_between`), so pairs outlive the Kairos catalog, which drops them once their markets expire.
+- `price_history` and `history_summary`: Kalshi and Polymarket trade prices in the minutes both venues traded, around each event's start.
+- `check_settlements` and `settlement_summary`: whether both venues settled each pair the same way.
+- Commands `kairos snapshot`, `kairos history` and `kairos settlements`.
+- Relations record Polymarket's `game_start` and Kalshi's `expected_expiration`.
+- `kairos_relations(catalog=...)` aligns a saved catalog; `venues.polymarket_markets(..., include_closed=True)` also finds closed markets.
+- A live contract test checks Kairos's settlement results against Kalshi's and Polymarket's own.
+
+### Fixed
+
+- For Polymarket, `KairosMarket.ticker` is the market's UMA question id, not its condition id (documentation).
+
+## [0.2.0] - 2026-10-07
 
 ### Added
 

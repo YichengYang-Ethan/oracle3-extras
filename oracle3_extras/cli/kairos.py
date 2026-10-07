@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +11,19 @@ from oracle3.market.relations import RELATIONS_PATH, MarketRelation
 
 from oracle3_extras.arbitrage import scan_relations
 from oracle3_extras.cli._common import echo_json, run, scan_options
+from oracle3_extras.market.archive import load_archive, started_between, update_archive
 from oracle3_extras.market.kairos import (
     MIN_SIMILARITY,
     KairosRelations,
+    check_settlements,
+    history_summary,
     kairos_relations,
+    price_history,
     save_relations,
+    settlement_summary,
 )
+
+ARCHIVE = click.Path(dir_okay=False, path_type=Path)
 
 
 @click.group()
@@ -170,3 +178,125 @@ def scan(
         )
     )
     echo_json({'ok': True, 'catalog': result.summary(), **report.to_dict(top=top)})
+
+
+@kairos.command()
+@click.option(
+    '--archive',
+    type=ARCHIVE,
+    required=True,
+    help='Archive file to create or update (.jsonl.gz).',
+)
+@click.option(
+    '--keep-days',
+    type=float,
+    default=14,
+    show_default=True,
+    help='Forget pairs whose event started longer ago than this.',
+)
+@click.pass_obj
+def snapshot(options: dict[str, Any], archive: Path, keep_days: float) -> None:
+    """Archive today's aligned pairs, so they outlive the Kairos catalog.
+
+    Kairos drops a pair once its markets expire; history and settlements read
+    the archive instead. Run it a few times a day.
+    """
+    result = _load(options)
+    counts = update_archive(archive, result.relations, keep_days=keep_days)
+    echo_json(
+        {
+            'ok': True,
+            'archive': str(archive),
+            'summary': result.summary(),
+            'archived': counts,
+        }
+    )
+
+
+@kairos.command()
+@click.option(
+    '--archive',
+    type=ARCHIVE,
+    required=True,
+    help='Archive written by `kairos snapshot`.',
+)
+@click.option(
+    '--days',
+    type=float,
+    default=1,
+    show_default=True,
+    help='Events that started in the last N days.',
+)
+@click.option(
+    '--timeframe',
+    type=click.Choice(['60', '300', '900', '3600']),
+    default='60',
+    show_default=True,
+    help='Candle width in seconds.',
+)
+@click.option(
+    '--widest', type=int, default=10, show_default=True, help='Pairs to list.'
+)
+@click.pass_obj
+def history(
+    options: dict[str, Any], archive: Path, days: float, timeframe: str, widest: int
+) -> None:
+    """How far apart the two venues traded each archived pair around its start.
+
+    Uses Kairos candles: trade prices in the buckets where both venues traded,
+    not executable quotes.
+    """
+    now = datetime.now(timezone.utc)
+    relations = started_between(load_archive(archive), now - timedelta(days=days), now)
+    histories = run(price_history(relations, timeframe=int(timeframe), now=now))
+    echo_json(
+        {
+            'ok': True,
+            'archive': str(archive),
+            'days': days,
+            'summary': history_summary(histories, widest=widest),
+        }
+    )
+
+
+@kairos.command()
+@click.option(
+    '--archive',
+    type=ARCHIVE,
+    required=True,
+    help='Archive written by `kairos snapshot`.',
+)
+@click.option(
+    '--days',
+    type=float,
+    default=7,
+    show_default=True,
+    help='Events that started in the last N days.',
+)
+@click.option(
+    '--min-age-hours',
+    type=float,
+    default=6,
+    show_default=True,
+    help='Skip events that started more recently than this (still settling).',
+)
+@click.pass_obj
+def settlements(
+    options: dict[str, Any], archive: Path, days: float, min_age_hours: float
+) -> None:
+    """Check that both venues settled each archived pair the same way."""
+    now = datetime.now(timezone.utc)
+    relations = started_between(
+        load_archive(archive),
+        now - timedelta(days=days),
+        now - timedelta(hours=min_age_hours),
+    )
+    checks = run(check_settlements(relations))
+    echo_json(
+        {
+            'ok': True,
+            'archive': str(archive),
+            'days': days,
+            'summary': settlement_summary(checks),
+        }
+    )

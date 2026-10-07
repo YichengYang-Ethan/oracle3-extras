@@ -22,6 +22,7 @@ __all__ = [
     'USER_AGENT',
     'APIError',
     'chunks',
+    'pause',
     'gather_limited',
     'new_client',
     'request_json',
@@ -123,6 +124,12 @@ async def request_json(
             )
         attempt += 1
         await _sleep(wait)
+
+
+async def pause(seconds: float) -> None:
+    """Wait between calls to a service (tests replace the sleep)."""
+    if seconds > 0:
+        await _sleep(seconds)
 
 
 def chunks(items: Sequence[T], size: int) -> list[Sequence[T]]:

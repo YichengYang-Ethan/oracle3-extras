@@ -189,20 +189,37 @@ def kalshi_quote(
 # ── Polymarket ───────────────────────────────────────────────────────────
 
 
-async def polymarket_markets(ids: Iterable[str]) -> dict[str, dict[str, Any]]:
-    """Gamma market objects keyed by market id (as a string)."""
+async def polymarket_markets(
+    ids: Iterable[str], *, include_closed: bool = False
+) -> dict[str, dict[str, Any]]:
+    """Gamma market objects keyed by market id (as a string).
+
+    Gamma leaves closed markets out of a lookup by id unless asked with
+    ``closed=true``, which in turn returns only closed ones; with
+    ``include_closed`` the ids not found open are looked up again as closed.
+    """
     unique = list(dict.fromkeys(str(i) for i in ids if i))
+    found = await _gamma_lookup(unique, closed=False)
+    missing = [i for i in unique if i not in found]
+    if include_closed and missing:
+        found.update(await _gamma_lookup(missing, closed=True))
+    return found
+
+
+async def _gamma_lookup(ids: list[str], *, closed: bool) -> dict[str, dict[str, Any]]:
     async with new_client() as client:
 
         async def fetch(batch: Any) -> list[dict[str, Any]]:
             params = [('id', i) for i in batch] + [('limit', str(len(batch)))]
+            if closed:
+                params.append(('closed', 'true'))
             data = await request_json(
                 client, 'GET', f'{GAMMA_API}/markets', params=params
             )
             return data if isinstance(data, list) else []
 
         pages = await gather_limited(
-            (fetch(b) for b in chunks(unique, GAMMA_BATCH)), POLYMARKET_CONCURRENCY
+            (fetch(b) for b in chunks(ids, GAMMA_BATCH)), POLYMARKET_CONCURRENCY
         )
     return {str(m['id']): m for page in pages for m in page if m.get('id') is not None}
 

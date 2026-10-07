@@ -18,6 +18,7 @@ Use this skill when the user wants to compare prices for the same event on Kalsh
 2. For each opportunity, read `basket`, `depth.contracts`, `depth.net_edge` and `warnings`. The `depth` figures (walked down the order books) count; `top_of_book` alone does not.
 3. Before calling anything an arbitrage, read both rulebooks with `get_market` (Kalshi ticker from `market_a`, Polymarket id from `market_b`). Ties, postponements and cancellations can settle differently on the two venues.
 4. To keep the pairs for later, run `oracle3-extras --quiet kairos sync`, then `list_relations` and `check_constraint_live` work on them.
+5. For questions about the past, keep an archive (`oracle3-extras --quiet kairos snapshot --archive pairs.jsonl.gz`, a few times a day) and read it with `kairos history` (how far apart the venues traded around each start) or `kairos settlements` (whether both venues settled each pair the same way). History compares trade prices, not quotes: never present a historical gap as an arbitrage that could have been taken.
 
 ## How to report
 

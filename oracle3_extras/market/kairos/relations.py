@@ -25,7 +25,11 @@ from typing import Any
 from oracle3.market.relations import RELATIONS_PATH, MarketRelation
 
 from oracle3_extras import venues
-from oracle3_extras.market.align import OutcomeAlignment, align_kalshi_polymarket
+from oracle3_extras.market.align import (
+    OutcomeAlignment,
+    align_kalshi_polymarket,
+    utc_time,
+)
 from oracle3_extras.market.kairos.client import (
     KairosClient,
     MatchedMarkets,
@@ -111,6 +115,7 @@ def to_relation(
     expiries = [
         str(t) for t in (kalshi.get('close_time'), polymarket.get('endDate')) if t
     ]
+    start = utc_time(polymarket.get('gameStartTime'))
     return MarketRelation(
         relation_id=f'{RELATION_PREFIX}{ticker}:{market_id}',
         market_a={
@@ -122,6 +127,7 @@ def to_relation(
             'event_ticker': str(kalshi.get('event_ticker') or ''),
             'series_ticker': ticker.split('-')[0],
             'yes_outcome': label,
+            'expected_expiration': str(kalshi.get('expected_expiration_time') or ''),
         },
         market_b={
             'venue': 'polymarket',
@@ -133,6 +139,7 @@ def to_relation(
             'condition_id': str(polymarket.get('conditionId') or ''),
             'slug': str(polymarket.get('slug') or ''),
             'outcomes': outcomes,
+            'game_start': start.isoformat() if start else '',
         },
         spread_type=alignment.relation,
         confidence=pair.similarity,
@@ -160,6 +167,7 @@ def to_relation(
 async def kairos_relations(
     client: KairosClient | None = None,
     *,
+    catalog: MatchedMarkets | None = None,
     min_similarity: float | None = None,
     include_closed: bool = False,
 ) -> KairosRelations:
@@ -167,18 +175,21 @@ async def kairos_relations(
 
     Args:
         client: Kairos client; a default anonymous client if omitted.
+        catalog: Align this catalog snapshot instead of fetching one.
         min_similarity: Kairos similarity floor (never below 0.82).
-        include_closed: Keep pairs whose markets no longer trade.
+        include_closed: Keep pairs whose markets no longer trade (needed to
+            align an older snapshot whose games have finished).
     """
-    client = client or KairosClient()
-    catalog = await client.matched_markets(
-        provider='kalshi', min_similarity=min_similarity
-    )
+    if catalog is None:
+        client = client or KairosClient()
+        catalog = await client.matched_markets(
+            provider='kalshi', min_similarity=min_similarity
+        )
     pairs = catalog.between('kalshi', 'polymarket')
     kalshi_ids = [p.side('kalshi').market_id for p in pairs]  # type: ignore[union-attr]
     poly_ids = [p.side('polymarket').market_id for p in pairs]  # type: ignore[union-attr]
     kalshi = await venues.kalshi_markets(kalshi_ids)
-    poly = await venues.polymarket_markets(poly_ids)
+    poly = await venues.polymarket_markets(poly_ids, include_closed=include_closed)
 
     result = KairosRelations(catalog=catalog)
     seen: set[str] = set()

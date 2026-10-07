@@ -28,10 +28,11 @@ Open <https://github.com/YichengYang-Ethan/oracle3-extras/settings/environments>
 2. Commit, then tag and publish the release:
 
    ```bash
-   git tag v0.2.0 && git push origin v0.2.0
-   gh release create v0.2.0 --title "oracle3-extras 0.2.0" --generate-notes
+   git tag v0.3.0 && git push origin v0.3.0
+   gh release create v0.3.0 --title "oracle3-extras 0.3.0" --generate-notes
    ```
 
+   If the tag already exists (tags are also made for installs from GitHub), skip `git tag` and only create the release.
 3. The workflow checks that the tag matches the `pyproject.toml` version, builds, installs and imports the wheel and the sdist, then uploads. After the first upload, change the install line in `README.md` to `pip install oracle3-extras`.
 
 ## Troubleshooting

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oracle3-extras"
-version = "0.2.0"
+version = "0.3.0"
 description = "Integrations and experimental features for oracle3: Kairos cross-venue pairs, live no-arbitrage scans and MetaMask Agent Wallet execution."
 readme = "README.md"
 license = "Apache-2.0"

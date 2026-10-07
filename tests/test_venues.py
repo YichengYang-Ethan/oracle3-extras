@@ -122,3 +122,19 @@ def test_prices_outside_zero_one_are_dropped() -> None:
         gamma_market('9', 'Q', ['A', 'B'], slug='s', best_bid=0.0, best_ask=1.0)
     )
     assert quote.yes_bid is None and quote.yes_ask is None
+
+
+async def test_closed_markets_need_a_second_lookup(http) -> None:
+    def reply(request):
+        closed = request.url.params.get('closed') == 'true'
+        ids = request.url.params.get_list('id')
+        return [
+            gamma_market(i, 'Q', ['Yes', 'No'], slug='s', closed=closed)
+            for i in ids
+            if (i == '2') == closed
+        ]
+
+    http.get(GAMMA_MARKETS, reply)
+    assert set(await venues.polymarket_markets(['1', '2'])) == {'1'}
+    found = await venues.polymarket_markets(['1', '2'], include_closed=True)
+    assert set(found) == {'1', '2'} and found['2']['closed'] is True

@@ -1,8 +1,8 @@
 # oracle3 × Kairos: integration notes and proposal
 
-Version 0.2.0 · Maintainer: Yicheng Yang (yy85@illinois.edu)
+Version 0.3.0 · Maintainer: Yicheng Yang (yy85@illinois.edu)
 
-This document describes how `oracle3_extras.market.kairos` uses Kairos's public Data API, what we found in the matched-market catalog, and what would make the integration better on both sides. Everything about the API below was checked against Kairos's published OpenAPI specification (`app.kairos.trade/openapi/data-api.yaml`) and live responses on 7 October 2026.
+This document describes how `oracle3_extras.market.kairos` uses Kairos's public Data API and Market Data API, what we found in the data, and what would make the integration better on both sides. Everything about the APIs below was checked against Kairos's published OpenAPI specifications (`app.kairos.trade/openapi/data-api.yaml`, `market-data-api.yaml`) and live responses on 7 October 2026.
 
 ## 1. What the integration does
 
@@ -14,7 +14,8 @@ oracle3 is an open-source trading engine and MCP server for prediction markets: 
 - `kairos_relations()` looks up both sides of every Kalshi–Polymarket pair on the venues, lines up their outcomes (`oracle3_extras.market.align`) and returns `same_event` or `complement` relations, with the evidence and any warnings.
 - `save_relations()` merges them into oracle3's relation store, which oracle3's MCP tools (`list_relations`, `check_constraint_live`) read.
 - `oracle3_extras.arbitrage.scan_relations()` checks them against live prices after fees and sizes the survivors against the order books.
-- `oracle3-extras kairos pairs | sync | scan` runs each step from the command line.
+- `update_archive()` keeps every aligned pair after Kairos drops it from the catalog, and two checks read that archive with the Market Data API: `price_history()` (how far apart the venues traded each pair around its start) and `check_settlements()` (whether both venues settled it the same way).
+- `oracle3-extras kairos pairs | sync | scan | snapshot | history | settlements` runs each step from the command line.
 
 Everything is read-only: no orders go through Kairos or anywhere else.
 
@@ -24,6 +25,8 @@ Everything is read-only: no orders go through Kairos or anywhere else.
 |---|---|---|
 | `GET data.kairos.trade/matched-markets?cursor=&provider=kalshi&limit=1000` | The catalog | Public; documented limit 60 a minute. Cursor mode, `has_more` as the stop signal, restart on 409. A full walk is 4 requests. |
 | `GET data.kairos.trade/market-clusters` | `KairosClient.market_clusters()` | Not used by `sync` or `scan`; available for "which venues list this market?" |
+| `POST md.kairos.trade/v1/candles/batch` | Trade prices for `history` | Public. 25 series per call with a 1-second pause; stops on repeated failure instead of retrying |
+| `GET md.kairos.trade/v1/resolutions` | Settlement results for `settlements` | Public. 200 markets per call; Kalshi by ticker, Polymarket by numeric market id |
 | Kalshi `GET /markets?tickers=`, `GET /series/{ticker}`, `GET /markets/orderbooks` | Verify the Kalshi side, fee schedule, books | 100 tickers per request, 2 requests in flight |
 | Polymarket Gamma `GET /markets?id=`, CLOB `POST /books` | Verify the Polymarket side, fee schedule, books | 50 markets per request |
 
@@ -68,6 +71,9 @@ Observations that may help Kairos:
 3. **Date conflicts are on the venues' side.** 23 of the 25 rejected pairs are college football games whose Kalshi rules name 16 October while Polymarket starts them on 17 October (US Eastern time). The pairs are probably right; we leave them out because the Kalshi contract is tied to a date.
 4. **Side mapping is not available yet.** `/matched-markets/enriched`, which would give outcomes and token ids for both sides, returned `503 Market enrichment unavailable` at 05:40 and 06:10 UTC, and `/market-links/featured`, which publishes per-venue YES/NO tokens, returned no links. With either, the integration could use Kairos's own side mapping instead of inferring it.
 
+5. **Settlement data agrees with the venues.** Of the pairs whose games started in the three days before 17:50 UTC on 7 October, 253 had settled on both venues, and Kairos reports the same result for both sides of all 253 (138 NO, 114 YES, one 50-50). A random sample of 30 matched Kalshi's and Polymarket's own results exactly.
+6. **Two documentation differences.** `/v1/resolutions` resolves Polymarket markets by numeric market id (27 of 27 in our test) and returns nothing for condition ids, although the documentation says condition ids. In `/matched-markets`, the Polymarket side's `ticker` is the market's UMA question id (Gamma `questionID`), not its condition id.
+
 ## 5. What a scan found (7 October 2026, 06:09 UTC)
 
 | | Pairs |
@@ -79,7 +85,20 @@ Observations that may help Kairos:
 
 Cross-venue gaps between Kalshi and Polymarket are rare and small once both fee schedules are applied; most top-of-book edges disappear in the order books. The scan is designed to report that honestly. It assumes every leg fills at the prices used and both markets settle the same way, and it reads the two venues one after the other, so prices can move in between.
 
-## 6. Proposal, smallest change first
+## 6. What the price history shows (7 October 2026)
+
+`price_history` compares the two venues' last trades in each minute in which both traded, from Kairos one-minute candles. Of the 347 pairs whose games started in the 48 hours before 18:03 UTC on 7 October, 308 traded on both venues in the same minute at least once, 9,104 minutes in all.
+
+| Minutes from the start | Minutes compared | Median gap | 90th percentile | Gap of 2¢ or more |
+|---|---|---|---|---|
+| 120 before to the start | 644 | 1¢ | 2¢ | 27% |
+| First 90 minutes | 4,876 | 1¢ | 3¢ | 30% |
+| 90 to 180 minutes | 2,954 | 1¢ | 4–5¢ | 40% |
+| 180 to 240 minutes | 630 | 2¢ | 6¢ | 52% |
+
+The venues trade close together before a game and drift apart as it goes on, when prices move fastest. Two trades in the same minute can be up to a minute apart, so part of the in-play gap is timing rather than disagreement, and none of it is an executable arbitrage by itself.
+
+## 7. Proposal, smallest change first
 
 **A. Side mapping in `/matched-markets`.** For each side, the outcome (or token) that corresponds to the other side's YES, as `/market-links` already publishes with `tokenIdYes` and `tokenIdNo`. It would replace inference with Kairos's own answer and cover non-sports pairs, which this integration does not align today.
 
@@ -91,24 +110,25 @@ Cross-venue gaps between Kalshi and Polymarket are rare and small once both fee 
 
 **E. Listing.** A link to oracle3-extras from the Kairos API quickstart or docs, as an open-source example built on the Data API.
 
-## 7. Open questions for the Kairos team
+## 8. Open questions for the Kairos team
 
 1. **Data terms.** The API specification links `kairos.trade/terms`, which returned 404 on 7 October 2026. Which terms apply to the public Data API, and may users keep matched pairs in a local relation store?
 2. **Attribution.** Is the User-Agent enough for Kairos to see this traffic, or would you prefer a header or parameter of your own?
 3. **Enrichment.** Is the 503 from `/matched-markets/enriched` expected for anonymous callers?
+4. **Candle load.** What batch size and request rate would you like clients to use? On 7 October one 200-series batch of one-minute candles returned 502, and `md.kairos.trade` answered 503 for about a minute afterwards (around 17:50 UTC). We now send 25 series per call with a one-second pause.
 
-## 8. Milestones
+## 9. Milestones
 
 | | Scope | Status |
 |---|---|---|
 | M1 | Client, outcome alignment, relations, scan, CLI; offline tests and a live contract test | Done (0.2.0) |
-| M2 | Scheduled scans that record cross-venue spreads over time | Next |
+| M2 | Record cross-venue prices and settlements over time | In progress: archive, history and settlement checks in 0.3.0; a public daily report next |
 | M3 | Live books from the Kairos market-data WebSocket instead of venue polling | Needs a key with stream access |
 | M4 | Outcome alignment and relation scans graduate into oracle3 | After M2 |
 
 Execution through Kairos is not planned: oracle3 executes through venue APIs and MetaMask Agent Wallet.
 
-## 9. Maintenance commitments
+## 10. Maintenance commitments
 
 - Run the live contract test (`pytest --live`) before every release and after Kairos changes the Data API.
 - One named maintainer and a security contact for the integration.

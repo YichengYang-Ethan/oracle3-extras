@@ -111,3 +111,83 @@ def test_api_failure_is_a_json_error(http) -> None:
     result, out = invoke('kairos', 'pairs')
     assert result.exit_code == 1
     assert out['error']['code'] == 'API_ERROR'
+
+
+def test_snapshot_archives_aligned_pairs(http, tmp_path) -> None:
+    import gzip
+
+    route(http)
+    archive = tmp_path / 'archive.jsonl.gz'
+    result, out = invoke('kairos', 'snapshot', '--archive', str(archive))
+    assert result.exit_code == 0, result.output
+    assert out['archived'] == {'added': 1, 'updated': 0, 'dropped': 0, 'total': 1}
+    with gzip.open(archive, 'rt') as handle:
+        assert 'kairos:KXNHLGAME-26OCT10DALPIT-DAL:1' in handle.read()
+
+
+def test_history_and_settlements_read_the_archive(http, tmp_path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from oracle3.market.relations import MarketRelation
+
+    from oracle3_extras.market.archive import update_archive
+    from oracle3_extras.market.kairos import MARKET_DATA_API
+
+    start = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(
+        hours=10
+    )
+    archive = tmp_path / 'archive.jsonl.gz'
+    update_archive(
+        archive,
+        [
+            MarketRelation(
+                relation_id='kairos:K:P',
+                market_a={'venue': 'kalshi', 'market_id': 'K', 'name': 'K wins'},
+                market_b={
+                    'venue': 'polymarket',
+                    'market_id': 'P',
+                    'name': 'K vs. L',
+                    'game_start': start.isoformat(),
+                },
+                spread_type='same_event',
+            )
+        ],
+    )
+    bar = {
+        'bucket_start': (start + timedelta(minutes=5)).isoformat(),
+        'open': 50,
+        'high': 50,
+        'low': 50,
+        'close': 50,
+        'volume': 1,
+        'timeframe_seconds': 60,
+    }
+    http.add(
+        'POST',
+        f'{MARKET_DATA_API}/v1/candles/batch',
+        {
+            'results': [
+                {'index': 0, 'candles': [bar]},
+                {'index': 1, 'candles': [dict(bar, close=47)]},
+            ]
+        },
+    )
+    http.get(
+        f'{MARKET_DATA_API}/v1/resolutions',
+        lambda req: {
+            'resolutions': {'K': 1}
+            if req.url.params['provider'] == 'kalshi'
+            else {'P': 1}
+        },
+    )
+
+    result, out = invoke('kairos', 'history', '--archive', str(archive), '--days', '1')
+    assert result.exit_code == 0, result.output
+    assert out['summary']['pairs_with_overlap'] == 1
+    assert out['summary']['max_abs_gap'] == 0.03
+
+    result, out = invoke(
+        'kairos', 'settlements', '--archive', str(archive), '--days', '2'
+    )
+    assert result.exit_code == 0, result.output
+    assert (out['summary']['settled'], out['summary']['agree']) == (1, 1)

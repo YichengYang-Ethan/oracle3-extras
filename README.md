@@ -31,7 +31,7 @@ Each integration also has a short path, `oracle3_extras.kairos` and `oracle3_ext
 ## Installation
 
 ```bash
-pip install git+https://github.com/YichengYang-Ethan/oracle3-extras.git
+pip install git+https://github.com/YichengYang-Ethan/oracle3-extras.git@v0.3.0
 ```
 
 Each release is tested against one oracle3 minor series (0.2.x needs oracle3 1.2.x), because oracle3-extras builds on oracle3 internals.
@@ -65,7 +65,7 @@ oracle3-extras kairos scan                 # cross-venue edges after fees, sized
 oracle3-extras scan --source kairos        # re-check the stored relations later
 ```
 
-No account is needed. Kairos's public tier allows 60 catalog requests a minute; a full sync uses four. Set `KAIROS_CLIENT_ID`, `KAIROS_API_KEY` and `KAIROS_API_SECRET` to use an API key instead.
+No account is needed. Kairos's public tier allows 60 catalog requests a minute; a full sync uses four. Set `KAIROS_CLIENT_ID`, `KAIROS_API_KEY` and `KAIROS_API_SECRET` to use an API key instead (a read-only key is enough; nothing here trades).
 
 After `sync`, oracle3's MCP server sees the pairs: `list_relations` lists them, and each relation's markets (`venue`, `market_id`) can be passed straight to `check_constraint_live`.
 
@@ -88,6 +88,18 @@ Every relation starts at status `discovered`, with its evidence and warnings in 
 ### What a scan reports
 
 `kairos scan` quotes every aligned pair in batches (100 Kalshi markets or 50 Polymarket markets per request), runs oracle3's `check_constraint` with each venue's published fee schedule, and re-checks the pairs with an edge after fees against full order books. On 7 October 2026 at 06:09 UTC, 45 of 2,432 pairs broke the no-arbitrage bound before fees, 5 kept an edge after fees at the top of the book, and 2 survived the order books, worth $0.014 on 5 contracts and $0.0004 on 0.05 contracts. Cross-venue gaps between these two venues are rare and small after fees; the scan is built to say so honestly rather than to promise profits.
+
+### History and settlement checks
+
+Kairos drops a pair once its markets expire, so `kairos snapshot` keeps every aligned pair in a local archive; run it a few times a day. Two commands read the archive with Kairos's Market Data API:
+
+```bash
+oracle3-extras kairos snapshot --archive pairs.jsonl.gz      # add today's pairs
+oracle3-extras kairos history --archive pairs.jsonl.gz       # how far apart the venues traded, by minutes from the start
+oracle3-extras kairos settlements --archive pairs.jsonl.gz   # did both venues settle each pair the same way?
+```
+
+On 7 October 2026, the 253 pairs that had settled on both venues in the previous three days all settled the same way, and a sample of 30 matched Kalshi's and Polymarket's own results. Over the 308 pairs that traded on both venues in the same minute, the median gap between the last trades was 1 cent; the 90th percentile was 2 cents before the start and 6 cents three to four hours in. `history` measures disagreement between trade prices, not arbitrage that could have been executed.
 
 ### Attribution and data
 
