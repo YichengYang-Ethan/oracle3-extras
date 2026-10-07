@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oracle3-extras"
+version = "0.1.0"
+description = "Optional and experimental integrations for oracle3, starting with execution through MetaMask Agent Wallet."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Yicheng Yang", email = "yy85@illinois.edu" }]
+requires-python = ">=3.10"
+dependencies = [
+    "oracle3>=1.2.2",
+    "click>=8.1",
+]
+keywords = [
+    "oracle3",
+    "prediction-markets",
+    "polymarket",
+    "metamask",
+    "agent-wallet",
+    "ai-agents",
+    "trading",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+oracle3-extras = "oracle3_extras.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/YichengYang-Ethan/oracle3-extras"
+oracle3 = "https://github.com/YichengYang-Ethan/oracle3-prediction-market-agent"
+"MetaMask Agent Wallet docs" = "https://docs.metamask.io/agent-wallet"
+
+[tool.hatch.build.targets.wheel]
+packages = ["oracle3_extras"]
+
+[tool.hatch.build.targets.sdist]
+include = ["oracle3_extras", "skills", "docs", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S106", "S603"]
+"oracle3_extras/metamask/client.py" = ["S603"]
+
+[tool.ruff.format]
+quote-style = "single"
