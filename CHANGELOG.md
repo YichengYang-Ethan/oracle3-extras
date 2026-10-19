@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0] - 2026-10-19
+
+### Added
+
+- `oracle3_extras.market.tickers` (short path `oracle3_extras.tickers`): open Kalshi and Polymarket events that price public companies, matched to stock tickers. `ticker_markets()` reads both venues' public APIs and returns one `TickerEvent` per event: the ticker and company, an event type (`price`, `earnings`, `kpi`, `mentions`, `legal`, `deal`, `leadership`, `product`, `other`), how the match was made, and the most traded market with its price and 24-hour volume.
+  - A ticker written in parentheses counts only in a Polymarket finance event (confidence 1.0), and only the first such code in a title unless it is a known ticker, so "(AUM)" or "(FL)" never count. Otherwise a company name must appear as a whole word in the title (0.7).
+  - The default company list is the S&P 500 (`data/sp500.csv`, ODC-PDDL) with the names people use for each company. Names that are also everyday words, places, people, teams or products ("Target", "Texas", "Abbott", "Hilton", "RTX") are never matched alone; 27 companies are matched by ticker only. `scripts/build_sp500_names.py` rebuilds the list.
+  - Sports events, and titles that only use a company's platform as a yardstick ("most searched on Google", App Store and Netflix charts), are skipped.
+  - Markets that price a company without naming it are out of reach; Dune's ticker mapping (an Enterprise dataset) would return the same `TickerEvent` rows.
+- Command `oracle3-extras tickers [TICKER[=Name]...]`, with `--venues`, `--type`, `--min-confidence`, `--no-prices` and `--limit`.
+
 ## [0.4.0] - 2026-10-07
 
 ### Added

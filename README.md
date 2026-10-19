@@ -5,6 +5,7 @@ oracle3-extras extends [oracle3](https://github.com/YichengYang-Ethan/oracle3-pr
 Highlights:
 
 - **Kairos cross-venue pairs as oracle3 relations.** [Kairos](https://kairos.trade) matches the same market on Kalshi, Polymarket, Predict.fun and Hyperliquid. oracle3-extras lines up the outcomes of every pair, checks each one independently (team names and codes, totals lines, game dates, event ids) and writes the `same_event` or `complement` relations oracle3 already understands.
+- **Prediction markets by ticker.** `ticker_markets` finds the open Kalshi and Polymarket events that price a public company (earnings beats, operating numbers, earnings-call mentions, deals, lawsuits) and labels each with its ticker, event type and price.
 - **Live no-arbitrage scans.** `scan_relations` checks thousands of relations against batched top-of-book quotes, then walks the order books of the survivors to size each edge after fees.
 - **MetaMask Agent Wallet execution.** An oracle3 `Trader` that routes Polymarket orders through Agent Wallet, so oracle3 never holds a private key.
 
@@ -12,7 +13,7 @@ oracle3-extras mirrors oracle3's namespaces to make usage and migration as easy 
 
 | oracle3 | oracle3-extras | Adds |
 |---|---|---|
-| `oracle3.market` (relations) | `oracle3_extras.market` | `align_kalshi_polymarket`, `align_two_outcome_markets`, `market.kairos` |
+| `oracle3.market` (relations) | `oracle3_extras.market` | `align_kalshi_polymarket`, `align_two_outcome_markets`, `market.kairos`, `market.tickers` |
 | `oracle3.arbitrage` (`check_constraint`) | `oracle3_extras.arbitrage` | `scan_relations`, `walk_books` |
 | `oracle3.trader` (`Trader`) | `oracle3_extras.trader` | `metamask.AgentWalletTrader` |
 | | `oracle3_extras.venues` | Batched, read-only Kalshi and Polymarket data; Predict.fun's fee schedule |
@@ -128,6 +129,31 @@ Requests carry the User-Agent `oracle3-extras/<version>` and nothing about the u
 ### Relationship with Kairos
 
 This integration uses Kairos's public Data API. It is written and maintained by the oracle3 maintainer and has not been reviewed or endorsed by Kairos. Kairos is a trademark of its owner and is named here only to describe compatibility.
+
+## Prediction markets by ticker
+
+Prediction markets price events that move stocks: earnings beats, quarterly operating numbers, what a CEO will say on the earnings call, deals, lawsuits. `oracle3_extras.market.tickers` finds those markets on Kalshi and Polymarket and matches them to stock tickers, from the venues' public APIs; no account is needed.
+
+```bash
+oracle3-extras tickers NVDA TSLA "RKLB=Rocket Lab"   # these companies; add names for tickers off the S&P 500
+oracle3-extras tickers --type earnings --type kpi     # the whole S&P 500, two event types
+```
+
+```python
+from oracle3_extras.market.tickers import ticker_markets
+
+found = await ticker_markets()                 # the S&P 500, both venues
+for event in found.for_ticker('NVDA'):
+    print(event.event_type, event.title, event.top_market, event.yes_price)
+```
+
+Each `TickerEvent` carries the ticker and company, the venue and event id, an event type (`price`, `earnings`, `kpi`, `mentions`, `legal`, `deal`, `leadership`, `product` or `other`), how it was matched, and the event's most traded market with its price and 24-hour volume.
+
+Matching is conservative. Polymarket writes the ticker in the titles of its finance markets ("NVIDIA (NVDA) Up or Down"), which counts with confidence 1.0. Kalshi names the company instead ("Starbucks total global stores in 2026"), so a company name must appear as a whole word in the title (0.7), and names that are also places, people, everyday words or products are never matched alone: Texas Instruments needs its full name, because Kalshi lists Texas weather and elections, and Abbott Laboratories because of Governor Greg Abbott. The bundled list covers the S&P 500; pass your own `Company` objects, or `TICKER=Name` on the command line, for anything else.
+
+On 19 October 2026 the scan read 13,034 open Kalshi events and 948 Polymarket events under finance, tech and business tags in 89 seconds. It matched 717 events to 208 tickers: 156 of the 503 S&P 500 companies, 45 of them on both venues, plus 52 other tickers that Polymarket writes in its titles. By type: 313 operating numbers, 144 stock-price markets, 119 earnings beats, 54 earnings-call mentions, and the rest deals, lawsuits, leadership and products. Most of these markets are thin: the median Polymarket event traded $170 in the previous 24 hours, and the median Kalshi company event did not trade at all.
+
+Markets that price a company without naming it (GPU rental prices for a chipmaker's products, say) are out of reach of name matching. Dune's Prediction Markets dataset maps those with a confidence score as an Enterprise add-on; a Dune source would return the same `TickerEvent` rows.
 
 ## MetaMask Agent Wallet
 

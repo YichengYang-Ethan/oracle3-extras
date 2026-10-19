@@ -14,6 +14,7 @@ from oracle3_extras._version import __version__
 from oracle3_extras.cli.kairos import kairos
 from oracle3_extras.cli.metamask import metamask
 from oracle3_extras.cli.scan import scan
+from oracle3_extras.cli.tickers import tickers
 
 __all__ = ['cli']
 
@@ -30,3 +31,4 @@ def cli(quiet: bool) -> None:
 cli.add_command(kairos)
 cli.add_command(metamask)
 cli.add_command(scan)
+cli.add_command(tickers)
