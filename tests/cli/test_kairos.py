@@ -7,8 +7,14 @@ from oracle3.market.relations import RelationStore
 
 from oracle3_extras import venues
 from oracle3_extras.cli import cli
-from oracle3_extras.market.kairos import DATA_API
-from tests.factories import gamma_market, kairos_page, kairos_pair, kalshi_market
+from oracle3_extras.market.kairos import DATA_API, MARKET_DATA_API
+from tests.factories import (
+    gamma_market,
+    kairos_any_pair,
+    kairos_pair,
+    kalshi_market,
+    serve_kairos_catalog,
+)
 
 K = kalshi_market(
     'KXNHLGAME-26OCT10DALPIT-DAL', 'Dallas', yes_bid='0.3800', yes_ask='0.4000'
@@ -26,15 +32,12 @@ BAD_K = kalshi_market('KXNHLGAME-26OCT10AAABBB-AAA', 'Aaa', status='finalized')
 BAD_P = gamma_market('2', 'A vs. B', ['A', 'B'], slug='nhl-aaa-bbb-2026-10-10')
 
 
-def route(http) -> None:
-    http.get(
-        f'{DATA_API}/matched-markets',
-        kairos_page(
-            [
-                kairos_pair(K['ticker'], 'Dallas wins', '1', 'Stars vs. Penguins'),
-                kairos_pair(BAD_K['ticker'], 'Aaa wins', '2', 'A vs. B'),
-            ]
-        ),
+def route(http, *extra) -> None:
+    serve_kairos_catalog(
+        http,
+        kairos_pair(K['ticker'], 'Dallas wins', '1', 'Stars vs. Penguins'),
+        kairos_pair(BAD_K['ticker'], 'Aaa wins', '2', 'A vs. B'),
+        *extra,
     )
     http.get(f'{venues.KALSHI_API}/markets', {'markets': [K, BAD_K]})
     http.get(
@@ -84,15 +87,18 @@ def test_sync_writes_an_oracle3_store(http, tmp_path) -> None:
     ]
 
 
-def test_sync_asks_kairos_for_kalshi_pairs_only_by_default(http, tmp_path) -> None:
-    route(http)
-    invoke('kairos', 'sync', '--store', str(tmp_path / 'relations.json'))
-    [catalog] = [r for r in http.requests if 'matched-markets' in str(r.url)]
-    assert catalog.url.params['provider'] == 'kalshi'  # Kalshi–Polymarket pairs
-    http.requests.clear()
-    invoke('kairos', 'pairs')
-    [catalog] = [r for r in http.requests if 'matched-markets' in str(r.url)]
-    assert 'provider' not in catalog.url.params  # every venue
+def test_sync_takes_kalshi_pairs_only_by_default(http, tmp_path) -> None:
+    route(http, kairos_any_pair(('polymarket', '1', 'x'), ('predictfun', 'pf1', 'x')))
+    http.add(
+        'POST', f'{MARKET_DATA_API}/v1/markets/batch', {'markets': {}, 'misses': []}
+    )
+    _, out = invoke('kairos', 'sync', '--store', str(tmp_path / 'relations.json'))
+    assert out['summary']['pairs_by_venues'] == {'kalshi + polymarket': 2}
+    _, out = invoke('kairos', 'pairs')  # every venue
+    assert out['summary']['pairs_by_venues'] == {
+        'kalshi + polymarket': 2,
+        'polymarket + predictfun': 1,
+    }
 
 
 def test_sync_dry_run_writes_nothing(http, tmp_path) -> None:
@@ -129,7 +135,7 @@ def test_scan_of_a_missing_store_is_empty(tmp_path) -> None:
 
 def test_api_failure_is_a_json_error(http) -> None:
     http.get(
-        f'{DATA_API}/matched-markets',
+        f'{DATA_API}/market-links/featured',
         (503, {'detail': 'Correlation store unavailable'}),
     )
     result, out = invoke('kairos', 'pairs')
@@ -142,7 +148,10 @@ def test_snapshot_archives_aligned_pairs(http, tmp_path) -> None:
 
     route(http)
     archive = tmp_path / 'archive.jsonl.gz'
-    result, out = invoke('kairos', 'snapshot', '--archive', str(archive))
+    # --keep-days: the fixture's game is long past, and the default 14 days would drop it
+    result, out = invoke(
+        'kairos', 'snapshot', '--archive', str(archive), '--keep-days', '3650'
+    )
     assert result.exit_code == 0, result.output
     assert out['archived'] == {'added': 1, 'updated': 0, 'dropped': 0, 'total': 1}
     with gzip.open(archive, 'rt') as handle:

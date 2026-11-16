@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.1] - 2026-11-15
+
+### Fixed
+
+- Kairos retired its similarity catalog, `GET data.kairos.trade/matched-markets` (it answers 404; our last successful walk was on 11 November 2026), so `kairos pairs`, `sync`, `scan` and `snapshot` all failed. `KairosClient.matched_markets()` now walks its successor, `GET /market-links/featured`: approved links, each one contract on two to four venues. Every two venues of a link make one `MatchedPair`, so archives, relation ids and the `KairosRelations` summary keep their shape.
+  - Polymarket markets are still keyed by their numeric Gamma id (the leg's `streamKey`).
+  - Each market's own name and Kairos category come from `POST /markets/details` (`KairosClient.market_details`, 500 per call), so relations keep `kairos_categories`. Kairos gives no category for some Polymarket markets.
+  - Pairs from a link have similarity 1.0 and carry the link id (`MatchedPair.link_id`, `analysis_b['kairos_link_id']`); a relation's reasoning names the link instead of a similarity. `--min-similarity` and `min_similarity` are accepted and ignored.
+  - The list holds approved links only: 1,428 links, or 2,547 pairs, on 15 November 2026. The old catalog had more than 13,000 pairs in early November.
+- A CLI test failed once its fixture game was more than 14 days old.
+
 ## [0.5.0] - 2026-10-19
 
 ### Added

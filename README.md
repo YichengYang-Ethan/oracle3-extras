@@ -51,10 +51,10 @@ Every command prints one JSON document on stdout, so agents and scripts can read
 Kairos is a trading terminal and API that aggregates Kalshi, Polymarket, Predict.fun and Hyperliquid. Its public Data API publishes a catalog of markets it has matched across venues. Finding the same event on two venues is the hardest part of cross-venue research; this integration turns Kairos's catalog into oracle3 relations you can check, store and trade, for every venue pair Kairos lists.
 
 ```text
-Kairos /matched-markets          oracle3_extras.market.kairos             oracle3
+Kairos /market-links             oracle3_extras.market.kairos             oracle3
   Kalshi, Polymarket,      -->     look up both markets             -->    same_event / complement relations
   Predict.fun, Hyperliquid         line up outcomes, check, explain        relation store, check_constraint_live,
-  similarity >= 0.82                                                       oracle3_extras.arbitrage.scan_relations
+  approved links                                                           oracle3_extras.arbitrage.scan_relations
 ```
 
 A daily report built on this integration, by market division (elections, sports, crypto, economics, tech, weather), is published at [Prediction-Illinois/kairos-cross-venue](https://github.com/Prediction-Illinois/kairos-cross-venue).

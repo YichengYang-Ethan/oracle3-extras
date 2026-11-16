@@ -236,8 +236,8 @@ def build_relation(
         spread_type=alignment.relation,
         confidence=pair.similarity,
         reasoning=(
-            f'Kairos matched these markets (similarity {pair.similarity:.2f}). '
-            f'{_NAMES[a_venue]} {a_label} is {_NAMES[b_venue]} outcome {index} '
+            _source(pair)
+            + f'{_NAMES[a_venue]} {a_label} is {_NAMES[b_venue]} outcome {index} '
             f'({b_outcomes[index] if index < len(b_outcomes) else "?"}); '
             f'checked by {", ".join(alignment.evidence)}. '
             + ''.join(f'Warning: {w}. ' for w in alignment.warnings)
@@ -248,6 +248,7 @@ def build_relation(
         analysis_a={'source': 'kairos', 'kind': alignment.kind},
         analysis_b={
             'source': 'kairos',
+            **({'kairos_link_id': pair.link_id} if pair.link_id else {}),
             'kairos_updated_at': pair.updated_at,
             'kairos_categories': categories,
             'evidence': list(alignment.evidence),
@@ -255,6 +256,13 @@ def build_relation(
         },
         valid_until=min(closes) if closes else None,
     )
+
+
+def _source(pair: MatchedPair) -> str:
+    """Where the pair came from: an approved Kairos link, or the old similarity catalog."""
+    if pair.link_id:
+        return f'Kairos lists these markets as one contract (link {pair.link_id}). '
+    return f'Kairos matched these markets (similarity {pair.similarity:.2f}). '
 
 
 def _ordered(
@@ -294,7 +302,8 @@ async def kairos_relations(
         client: Kairos client; a default anonymous client if omitted.
         catalog: Align this catalog snapshot instead of fetching one.
         venues: Venues to include (any of :data:`VENUES`).
-        min_similarity: Kairos similarity floor (never below 0.82).
+        min_similarity: Ignored: Kairos's link catalog has no similarity
+            score (kept for callers of the old catalog).
         include_closed: Keep pairs whose markets no longer trade (needed to
             align an older snapshot whose games have finished).
     """

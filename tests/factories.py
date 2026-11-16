@@ -182,3 +182,111 @@ def kairos_any_pair(
         'similarity': similarity,
         'updated_at': '2026-10-07T05:38:57.617000',
     }
+
+
+#: Kairos's numeric provider ids, as ``POST /markets/details`` reports them.
+KAIROS_PROVIDER_IDS = {'kalshi': 1, 'polymarket': 2, 'predictfun': 8, 'hyperliquid': 9}
+
+
+def kairos_leg(provider: str, market_id: str) -> dict[str, Any]:
+    """One venue of a Kairos link (``GET /market-links/featured``).
+
+    A Polymarket leg's ``marketId`` is the condition id and its ``streamKey``
+    the numeric Gamma id; the other venues use their own id for both.
+    """
+    if provider == 'polymarket':
+        return {
+            'provider': 'polymarket',
+            'marketId': f'0xcond{market_id}',
+            'streamKey': market_id,
+            'tokenIdYes': f'{market_id}-yes',
+            'tokenIdNo': f'{market_id}-no',
+            'executable': True,
+        }
+    return {
+        'provider': provider,
+        'marketId': market_id,
+        'streamKey': market_id,
+        'tokenIdYes': f'{market_id}::0',
+        'tokenIdNo': f'{market_id}::1',
+        'executable': provider != 'kalshi',
+    }
+
+
+def kairos_link(
+    *legs: tuple[str, str],
+    link_id: str = 'link-1',
+    title: str = '',
+    end_time: str | None = None,
+) -> dict[str, Any]:
+    """An approved Kairos link: one contract on two to four venues."""
+    return {
+        'id': link_id,
+        'title': title,
+        'image': None,
+        'league': None,
+        'sport': None,
+        'startTime': None,
+        'endTime': end_time,
+        'venues': [kairos_leg(provider, market_id) for provider, market_id in legs],
+        'executableVenues': [p for p, _ in legs if p != 'kalshi'],
+        'rank': 1.0,
+        'sideLabels': {'yes': 'Yes', 'no': 'No'},
+    }
+
+
+def kairos_links_page(
+    links: list[dict[str, Any]], *, next_cursor: str | None = None
+) -> dict[str, Any]:
+    return {'links': links, 'nextCursor': next_cursor}
+
+
+def link_from_pair(pair: dict[str, Any]) -> dict[str, Any]:
+    """The approved link holding both markets of an old-catalog pair."""
+    a, b = pair['a'], pair['b']
+    return kairos_link(
+        (a['provider'], a['market_id']),
+        (b['provider'], b['market_id']),
+        link_id=f"link-{a['market_id']}-{b['market_id']}",
+        title=a.get('title') or '',
+    )
+
+
+def kairos_details(*pairs: dict[str, Any]) -> dict[str, Any]:
+    """``POST /markets/details`` naming and categorising both sides of each pair."""
+    rows = []
+    for pair in pairs:
+        for side in (pair['a'], pair['b']):
+            if 'title' not in side:
+                continue  # a market Kairos has no details for
+            provider = side['provider']
+            rows.append(
+                {
+                    'market_id': side['market_id'],
+                    'provider_id': KAIROS_PROVIDER_IDS[provider],
+                    'event_id': None,
+                    'name': side['title'],
+                    'category': side.get('category'),
+                    'status': 'open',
+                    'condition_id': (
+                        f"0xcond{side['market_id']}"
+                        if provider == 'polymarket'
+                        else None
+                    ),
+                    'token_id': None,
+                    'token_ids': [],
+                    'outcomes': [],
+                }
+            )
+    return {'markets': rows}
+
+
+def serve_kairos_catalog(http: Any, *pairs: dict[str, Any]) -> None:
+    """Answer the catalog walk with one link per pair, and the details of each market."""
+    from oracle3_extras.market.kairos import DATA_API
+
+    http.get(
+        f'{DATA_API}/market-links/featured',
+        kairos_links_page([link_from_pair(p) for p in pairs]),
+    )
+    http.add('POST', f'{DATA_API}/markets/details', kairos_details(*pairs))

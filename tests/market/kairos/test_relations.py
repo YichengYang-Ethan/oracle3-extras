@@ -8,7 +8,6 @@ from oracle3.market.relations import MarketRelation, RelationStore
 from oracle3_extras import venues
 from oracle3_extras.market.align import OutcomeAlignment
 from oracle3_extras.market.kairos import (
-    DATA_API,
     MARKET_DATA_API,
     MatchedPair,
     kairos_relations,
@@ -19,9 +18,9 @@ from tests.factories import (
     gamma_market,
     kairos_any_pair,
     kairos_md_market,
-    kairos_page,
     kairos_pair,
     kalshi_market,
+    serve_kairos_catalog,
 )
 
 NHL = kalshi_market(
@@ -54,23 +53,16 @@ CLOSED_POLY = gamma_market('7', 'A vs. B', ['A', 'B'], slug='nhl-aaa-bbb-2026-10
 
 
 def route_catalog(http) -> None:
-    http.get(
-        f'{DATA_API}/matched-markets',
-        kairos_page(
-            [
-                kairos_pair(
-                    NHL['ticker'], 'Dallas wins', '4527234', 'Stars vs. Penguins'
-                ),
-                kairos_pair(TOTAL['ticker'], 'over 61.5', '4061332', 'O/U 60.5', 0.97),
-                kairos_pair(CLOSED['ticker'], 'A wins', '7', 'A vs. B'),
-                kairos_pair('KXMISSING-26OCT10XY-X', 'X wins', '8', 'X vs. Y'),
-                {
-                    'a': {'provider': 'kalshi', 'market_id': 'KXOTHER'},
-                    'b': {'provider': 'predictfun', 'market_id': '99'},
-                    'similarity': 0.9,
-                },
-            ]
-        ),
+    serve_kairos_catalog(
+        http,
+        kairos_pair(NHL['ticker'], 'Dallas wins', '4527234', 'Stars vs. Penguins'),
+        kairos_pair(TOTAL['ticker'], 'over 61.5', '4061332', 'O/U 60.5'),
+        kairos_pair(CLOSED['ticker'], 'A wins', '7', 'A vs. B'),
+        kairos_pair('KXMISSING-26OCT10XY-X', 'X wins', '8', 'X vs. Y'),
+        {
+            'a': {'provider': 'kalshi', 'market_id': 'KXOTHER'},
+            'b': {'provider': 'predictfun', 'market_id': '99'},
+        },
     )
     http.get(f'{venues.KALSHI_API}/markets', {'markets': [NHL, TOTAL, CLOSED]})
     http.get(f'{venues.GAMMA_API}/markets', [NHL_POLY, TOTAL_POLY, CLOSED_POLY])
@@ -194,19 +186,15 @@ ROUNDS = gamma_market(
 
 
 async def test_predict_fun_copies_line_up_and_other_games_are_caught(http) -> None:
-    http.get(
-        f'{DATA_API}/matched-markets',
-        kairos_page(
-            [
-                kairos_any_pair(
-                    ('polymarket', '601', ESPORTS['question']),
-                    ('predictfun', 'pf1', ESPORTS['question']),
-                ),
-                kairos_any_pair(
-                    ('predictfun', 'pf2', ROUNDS['question']),
-                    ('polymarket', '602', ROUNDS['question']),
-                ),
-            ]
+    serve_kairos_catalog(
+        http,
+        kairos_any_pair(
+            ('polymarket', '601', ESPORTS['question']),
+            ('predictfun', 'pf1', ESPORTS['question']),
+        ),
+        kairos_any_pair(
+            ('predictfun', 'pf2', ROUNDS['question']),
+            ('polymarket', '602', ROUNDS['question']),
         ),
     )
     http.get(f'{venues.GAMMA_API}/markets', [ESPORTS, ROUNDS])
@@ -248,15 +236,11 @@ async def test_hyperliquid_team_names_come_from_the_title(http) -> None:
     kalshi = kalshi_market(
         'KXNFLGAME-26OCT11LVNE-LV', 'Las Vegas', occurrence='2026-10-11T23:00:00Z'
     )
-    http.get(
-        f'{DATA_API}/matched-markets',
-        kairos_page(
-            [
-                kairos_any_pair(
-                    ('hyperliquid', '8764', 'NFL'),
-                    ('kalshi', kalshi['ticker'], 'Las Vegas wins'),
-                ),
-            ]
+    serve_kairos_catalog(
+        http,
+        kairos_any_pair(
+            ('hyperliquid', '8764', 'NFL'),
+            ('kalshi', kalshi['ticker'], 'Las Vegas wins'),
         ),
     )
     http.get(f'{venues.KALSHI_API}/markets', {'markets': [kalshi]})
@@ -290,9 +274,10 @@ async def test_hyperliquid_team_names_come_from_the_title(http) -> None:
 
 
 async def test_venue_filter(http) -> None:
-    http.get(f'{DATA_API}/matched-markets', kairos_page([]))
+    serve_kairos_catalog(
+        http, kairos_any_pair(('polymarket', '601', 'x'), ('predictfun', 'pf1', 'x'))
+    )
     result = await kairos_relations(venues=('kalshi', 'polymarket'))
-    assert http.requests[0].url.params['provider'] == 'kalshi'
-    assert result.relations == []
+    assert result.catalog.pairs == [] and result.relations == []
     with pytest.raises(ValueError):
         await kairos_relations(venues=('kalshi', 'opinion'))

@@ -32,7 +32,10 @@ ARCHIVE = click.Path(dir_okay=False, path_type=Path)
     '--min-similarity',
     type=click.FloatRange(0.0, 1.0),
     default=None,
-    help=f'Kairos similarity floor (Kairos never goes below {MIN_SIMILARITY}).',
+    help=(
+        'Ignored: Kairos replaced its similarity catalog (floor '
+        f'{MIN_SIMILARITY}) with approved links, which carry no score.'
+    ),
 )
 @click.option(
     '--include-closed', is_flag=True, help='Keep pairs whose markets no longer trade.'
@@ -151,6 +154,7 @@ def pairs(options: dict[str, Any], show_rejected: bool, limit: int | None) -> No
                     'title': pair.b.title,
                 },
                 'similarity': pair.similarity,
+                'link_id': pair.link_id,
                 'reason': reason,
             }
             for pair, reason in result.rejected

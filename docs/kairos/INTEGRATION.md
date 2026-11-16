@@ -1,6 +1,6 @@
 # oracle3 × Kairos: integration notes and proposal
 
-Version 0.4.0 · Maintainer: Yicheng Yang (yy85@illinois.edu)
+Version 0.5.1 · Maintainer: Yicheng Yang (yy85@illinois.edu)
 
 This document describes how `oracle3_extras.market.kairos` uses Kairos's Data API, Market Data API and fee quotes, what we found in the data, and what would make the integration better on both sides. Everything about the APIs below was checked against Kairos's published OpenAPI specifications (`app.kairos.trade/openapi/data-api.yaml`, `market-data-api.yaml`, `execution.yaml`) and live responses on 7 October 2026.
 
@@ -10,7 +10,7 @@ oracle3 is an open-source trading engine and MCP server for prediction markets: 
 
 `oracle3_extras.market.kairos` turns the catalog into oracle3 relations:
 
-- `KairosClient.matched_markets()` walks the whole catalog with Kairos's keyset cursor.
+- `KairosClient.matched_markets()` walks Kairos's approved links (`/market-links/featured`) and turns every two venues of a link into a pair; each market's own name and category come from `/markets/details`. Until 0.5.0 it walked the similarity catalog `/matched-markets`, which Kairos retired in November 2026.
 - `kairos_relations()` looks up both sides of every pair (Kalshi and Polymarket on their own APIs, Predict.fun and Hyperliquid through Kairos's Market Data API), lines up their outcomes (`oracle3_extras.market.align`) and returns `same_event` or `complement` relations with the evidence, any warnings and Kairos's categories.
 - `save_relations()` merges them into oracle3's relation store, which oracle3's MCP tools (`list_relations`, `check_constraint_live`) read.
 - `oracle3_extras.arbitrage.scan_relations()` checks them against live prices after fees: Kalshi and Polymarket order books, and Predict.fun last trades (Kairos marks) confirmed with Kairos fee quotes.
@@ -24,7 +24,9 @@ Everything is read-only: no orders go through Kairos or anywhere else.
 
 | Call | Use | Notes |
 |---|---|---|
-| `GET data.kairos.trade/matched-markets?cursor=&limit=1000` | The catalog | Public; documented limit 60 a minute. Cursor mode, `has_more` as the stop signal, restart on 409. A full walk of 11,487 pairs was 14 requests. |
+| `GET data.kairos.trade/market-links/featured?limit=100&cursor=` | The catalog (since 0.5.1) | Public. One row per approved link: one contract on two to four venues, with each venue's YES and NO token. `nextCursor` pages; a walk restarts if a cursor goes stale (400, 409 or 410). 1,428 links (2,547 pairs) in 15 requests on 15 November 2026. Links that started more than 6 hours ago leave the list. |
+| `POST data.kairos.trade/markets/details` | Each market's name and Kairos category | Public; 500 markets per call. Kairos has no category for some Polymarket markets. |
+| `GET data.kairos.trade/matched-markets?cursor=&limit=1000` | The catalog until 0.5.0 | Public; documented limit 60 a minute. Cursor mode, `has_more` as the stop signal, restart on 409. A full walk of 11,487 pairs was 14 requests. Retired by Kairos in November 2026 (404). |
 | `GET data.kairos.trade/market-clusters` | `KairosClient.market_clusters()` | Not used by `sync` or `scan`; available for "which venues list this market?" |
 | `POST md.kairos.trade/v1/markets/batch` | Predict.fun and Hyperliquid market metadata | 200 ids per call |
 | `GET md.kairos.trade/v1/marks` | Predict.fun last trades for the scan | 100 pairs per call (see 4.8) |
@@ -59,7 +61,7 @@ Other pairs (`align_two_outcome_markets`):
 | Same event | Equal event ids count as evidence. Sports event ids that name different dates or teams (`kbo-kt-sam-2026-05-20` and `kbo-kt-sam-2026-08-28`) reject the pair; other differences are a warning |
 | Lines and binaries | Totals need the same line; Hyperliquid binaries (`League: A v B: Subject`) are matched on their subject; draws only with draws |
 
-Kalshi–Polymarket relation ids are `kairos:<kalshi ticker>:<polymarket market id>`; others are `kairos:<venue A>:<id A>:<venue B>:<id B>`. Each relation's `confidence` is Kairos's similarity, its status starts at `discovered`, and `valid_until` is the earlier of the two closing times. A later sync refreshes market data but keeps the status and validation results; relations still at `discovered` that left the catalog are removed.
+Kalshi–Polymarket relation ids are `kairos:<kalshi ticker>:<polymarket market id>`; others are `kairos:<venue A>:<id A>:<venue B>:<id B>`. Each relation's `confidence` is 1.0 for a pair from an approved link (Kairos's own verdict that both markets are one contract) and Kairos's similarity for a pair from the old catalog, its status starts at `discovered`, and `valid_until` is the earlier of the two closing times. A later sync refreshes market data but keeps the status and validation results; relations still at `discovered` that left the catalog are removed.
 
 ## 4. What we found in the catalog (7 October 2026, 20:15 UTC)
 
@@ -118,7 +120,7 @@ The venues trade close together before a game and drift apart as it goes on, whe
 
 ## 7. Proposal, smallest change first
 
-**A. Side mapping in `/matched-markets`.** For each side, the outcome (or token) that corresponds to the other side's YES, as `/market-links` already publishes with `tokenIdYes` and `tokenIdNo`. It would replace inference with Kairos's own answer.
+**A. Side mapping in `/matched-markets`.** (Superseded: Kairos retired `/matched-markets` in November 2026, and `/market-links` lists each venue's YES and NO token.) For each side, the outcome (or token) that corresponds to the other side's YES, as `/market-links` already publishes with `tokenIdYes` and `tokenIdNo`. It would replace inference with Kairos's own answer.
 
 **B. Event check for repeated questions.** Compare event ids or dates before matching two markets whose question text is identical (4.4).
 

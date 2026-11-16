@@ -1,8 +1,8 @@
 """Client for Kairos's public Data API and Market Data API.
 
-Kairos matches the same market across Kalshi, Polymarket, Predict.fun and
-Hyperliquid by embedding similarity and publishes the verified pairs as a
-catalog (``https://data.kairos.trade``). Its Market Data API
+Kairos links the same contract across Kalshi, Polymarket, Predict.fun and
+Hyperliquid and publishes the approved links as a catalog
+(``https://data.kairos.trade/market-links/featured``). Its Market Data API
 (``https://md.kairos.trade``) serves normalized candles and settlement results
 for every venue it covers. The endpoints used here need no account; an API key
 raises the rate limits (``KAIROS_CLIENT_ID``, ``KAIROS_API_KEY`` and
@@ -36,6 +36,7 @@ __all__ = [
     'EXECUTION_API',
     'MARKET_DATA_API',
     'MIN_SIMILARITY',
+    'PROVIDER_IDS',
     'Candle',
     'CandleRequest',
     'CandleSeries',
@@ -53,8 +54,17 @@ EXECUTION_API = 'https://execution.kairos.trade'
 #: Candle widths the Market Data API serves, in seconds.
 TIMEFRAMES = (1, 60, 300, 900, 3600, 14400, 86400)
 
-#: Kairos never publishes a pair below this similarity, whatever the caller asks.
+#: Floor of Kairos's retired similarity catalog (``GET /matched-markets``).
+#: Approved links carry no similarity; they come in at 1.0.
 MIN_SIMILARITY = 0.82
+
+#: Kairos's numeric provider ids (``numeric_id`` in ``GET /providers/configs``).
+PROVIDER_IDS = {'kalshi': 1, 'polymarket': 2, 'predictfun': 8, 'hyperliquid': 9}
+
+#: Links per ``/market-links/featured`` page, Kairos's maximum.
+LINKS_PAGE_SIZE = 100
+#: Markets per ``POST /markets/details`` call, Kairos's hard cap.
+DETAILS_BATCH = 500
 
 logger = logging.getLogger(__name__)
 
@@ -157,12 +167,19 @@ class KairosMarket:
 
 @dataclass(frozen=True)
 class MatchedPair:
-    """Two markets that Kairos matched as the same underlying question."""
+    """Two markets that Kairos matched as the same underlying question.
+
+    Pairs from an approved Kairos link carry its ``link_id`` and a similarity
+    of 1.0: the link is Kairos's own verdict that both markets are one
+    contract. Pairs from the retired ``/matched-markets`` catalog kept its
+    embedding similarity (0.82 to 1).
+    """
 
     a: KairosMarket
     b: KairosMarket
     similarity: float
     updated_at: str = ''
+    link_id: str = ''
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any]) -> MatchedPair:
@@ -210,6 +227,66 @@ class MatchedMarkets:
         """Pairs with one side on each of the two venues."""
         wanted = frozenset({first, second})
         return [p for p in self.pairs if p.providers == wanted]
+
+
+class _StaleCursor(Exception):
+    """A catalog page cursor stopped working mid-walk; the walk restarts."""
+
+    def __init__(self, error: APIError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+def _leg_market_id(provider: str, leg: Mapping[str, Any]) -> str:
+    """A link leg's market id, in the form the rest of this package uses.
+
+    Polymarket markets are keyed by their numeric Gamma id, which Kairos
+    publishes as the leg's ``streamKey`` (its ``marketId`` is the condition
+    id). The other venues use ``marketId``: the Kalshi ticker, the Predict.fun
+    market id and the Hyperliquid outcome id.
+    """
+    if provider == 'polymarket':
+        stream = str(leg.get('streamKey') or '')
+        if stream.isdigit():
+            return stream
+    return str(leg.get('marketId') or '')
+
+
+def _link_pairs(
+    link: Mapping[str, Any], details: Mapping[tuple[str, str], Mapping[str, Any]]
+) -> list[MatchedPair]:
+    """Every two venues of one approved Kairos link, as :class:`MatchedPair`.
+
+    ``details`` maps ``(provider, market id)`` to Kairos's market details,
+    which give each market its own name and category; a market missing from
+    them keeps the link's title and no category.
+    """
+    link_id = str(link.get('id') or '')
+    markets: list[KairosMarket] = []
+    for leg in link.get('venues') or []:
+        provider = str(leg.get('provider') or '').lower()
+        market_id = _leg_market_id(provider, leg)
+        if not provider or not market_id:
+            continue
+        if any(m.provider == provider for m in markets):
+            continue  # one market per venue
+        info = details.get((provider, market_id)) or {}
+        markets.append(
+            KairosMarket(
+                provider=provider,
+                market_id=market_id,
+                provider_id=PROVIDER_IDS.get(provider),
+                title=info.get('name') or link.get('title'),
+                ticker=market_id if provider == 'kalshi' else None,
+                expires_at=link.get('endTime'),
+                category=info.get('category'),
+            )
+        )
+    return [
+        MatchedPair(a=a, b=b, similarity=1.0, link_id=link_id)
+        for i, a in enumerate(markets)
+        for b in markets[i + 1 :]
+    ]
 
 
 def _rfc3339(moment: datetime) -> str:
@@ -324,9 +401,10 @@ class KairosClient:
         base_url: Data API root, for testing against another deployment.
         market_data_url: Market Data API root.
         execution_url: Execution API root (only its read-only fee quotes are used).
-        page_size: Pairs per catalog page (Kairos allows up to 1,000).
-        max_restarts: How many times to restart a catalog walk that Kairos
-            reports as changed mid-walk (HTTP 409).
+        page_size: Links per catalog page (Kairos serves at most 100, and
+            anything larger is sent as 100).
+        max_restarts: How many times to restart a catalog walk whose page
+            cursor stops working mid-walk (HTTP 400, 409 or 410).
     """
 
     def __init__(
@@ -359,58 +437,128 @@ class KairosClient:
     async def matched_markets(
         self, *, provider: str | None = None, min_similarity: float | None = None
     ) -> MatchedMarkets:
-        """The whole verified pair catalog, walked with Kairos's keyset cursor.
+        """The whole cross-venue catalog: every approved Kairos link, as pairs.
+
+        Kairos retired its similarity catalog (``GET /matched-markets``) in
+        November 2026. Its successor, ``GET /market-links/featured``, lists
+        approved links: one contract listed on two to four venues. Every two
+        venues of a link make one :class:`MatchedPair`, so a link on Kalshi,
+        Polymarket and Predict.fun gives three. Each market's own name and
+        Kairos category come from ``POST /markets/details``.
 
         Args:
             provider: Only pairs with a side on this venue (``kalshi``,
                 ``polymarket``, ``predictfun`` or ``hyperliquid``).
-            min_similarity: Similarity floor; Kairos raises anything below
-                :data:`MIN_SIMILARITY` to that value.
+            min_similarity: Ignored: links carry no similarity score. Kept so
+                callers written for the old catalog keep working.
 
-        Every page of one walk comes from the same catalog version. If the
-        catalog changes mid-walk Kairos answers 409, and the walk restarts.
+        Kairos rebuilds the list every minute. If a page cursor stops working
+        mid-walk (HTTP 400, 409 or 410), the walk restarts.
         """
-        for attempt in range(self.max_restarts + 1):
-            try:
-                return await self._walk(provider, min_similarity)
-            except APIError as exc:
-                if exc.status != 409 or attempt == self.max_restarts:
-                    raise
-                logger.info('Kairos catalog changed during the walk; restarting')
-        raise AssertionError('unreachable')  # pragma: no cover
-
-    async def _walk(
-        self, provider: str | None, min_similarity: float | None
-    ) -> MatchedMarkets:
-        params: dict[str, Any] = {'limit': self.page_size, 'cursor': ''}
-        if provider:
-            params['provider'] = provider
         if min_similarity is not None:
-            params['min_similarity'] = min_similarity
+            logger.info('Kairos links carry no similarity; min_similarity is ignored')
+        links = await self._links()
+        details = await self.market_details(
+            (venue, _leg_market_id(venue, leg))
+            for link in links
+            for leg in link.get('venues') or []
+            if (venue := str(leg.get('provider') or '').lower())
+        )
         pairs: list[MatchedPair] = []
         seen: set[tuple[tuple[str, str], ...]] = set()
+        for link in links:
+            for pair in _link_pairs(link, details):
+                if provider and provider not in pair.providers:
+                    continue
+                if pair.key not in seen:
+                    seen.add(pair.key)
+                    pairs.append(pair)
+        logger.info('Kairos: %d links, %d pairs', len(links), len(pairs))
+        return MatchedMarkets(pairs=pairs)
+
+    async def _links(self) -> list[dict[str, Any]]:
+        """Every approved link, restarting a walk whose cursor goes stale."""
+        for attempt in range(self.max_restarts + 1):
+            try:
+                return await self._walk_links()
+            except _StaleCursor as stale:
+                if attempt == self.max_restarts:
+                    raise stale.error from None
+                logger.info('Kairos link list changed during the walk; restarting')
+        raise AssertionError('unreachable')  # pragma: no cover
+
+    async def _walk_links(self) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {'limit': min(self.page_size, LINKS_PAGE_SIZE)}
+        links: list[dict[str, Any]] = []
+        ids: set[str] = set()
         cursors: set[str] = set()
-        version = ''
         async with self._client() as client:
             while True:
-                data = await request_json(
-                    client, 'GET', f'{self.base_url}/matched-markets', params=params
-                )
-                version = str(data.get('catalog_version') or version)
-                for raw in data.get('pairs') or []:
-                    pair = MatchedPair.from_api(raw)
-                    if pair.key not in seen:
-                        seen.add(pair.key)
-                        pairs.append(pair)
-                cursor = data.get('next_cursor')
-                if not data.get('has_more') or not cursor or cursor in cursors:
+                try:
+                    data = await request_json(
+                        client,
+                        'GET',
+                        f'{self.base_url}/market-links/featured',
+                        params=params,
+                    )
+                except APIError as exc:
+                    if exc.status == 409 or (
+                        'cursor' in params and exc.status in (400, 410)
+                    ):
+                        raise _StaleCursor(exc) from exc
+                    raise
+                for link in data.get('links') or []:
+                    link_id = str(link.get('id') or '')
+                    if link_id and link_id in ids:
+                        continue
+                    ids.add(link_id)
+                    links.append(link)
+                cursor = data.get('nextCursor')
+                if not cursor or cursor in cursors:
                     break
                 cursors.add(cursor)
                 params['cursor'] = cursor
-        logger.info(
-            'Kairos: %d matched pairs (%d requests)', len(pairs), len(cursors) + 1
+        return links
+
+    async def market_details(
+        self, markets: Iterable[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Kairos's name, category and status for each ``(provider, market id)``.
+
+        ``POST /markets/details``, 500 markets per call. A Polymarket market
+        can be asked for by its numeric id or its condition id, and is found
+        under both. Markets Kairos does not know are left out.
+        """
+        refs = list(
+            dict.fromkeys(
+                (provider, str(market_id))
+                for provider, market_id in markets
+                if provider in PROVIDER_IDS and market_id
+            )
         )
-        return MatchedMarkets(pairs=pairs, catalog_version=version)
+        names = {number: name for name, number in PROVIDER_IDS.items()}
+        found: dict[tuple[str, str], dict[str, Any]] = {}
+        async with self._client() as client:
+            for batch in chunks(refs, DETAILS_BATCH):
+                data = await request_json(
+                    client,
+                    'POST',
+                    f'{self.base_url}/markets/details',
+                    json={
+                        'markets': [
+                            {'market_id': market_id, 'provider_id': PROVIDER_IDS[venue]}
+                            for venue, market_id in batch
+                        ]
+                    },
+                )
+                for row in data.get('markets') or []:
+                    venue = names.get(row.get('provider_id'))
+                    if venue is None:
+                        continue
+                    for key in (row.get('market_id'), row.get('condition_id')):
+                        if key:
+                            found.setdefault((venue, str(key)), row)
+        return found
 
     async def market_clusters(
         self, markets: Iterable[tuple[int, str]], *, floor: str = 'exact'
