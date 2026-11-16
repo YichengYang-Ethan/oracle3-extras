@@ -8,6 +8,7 @@ from oracle3.market.relations import MarketRelation, RelationStore
 from oracle3_extras import venues
 from oracle3_extras.market.align import OutcomeAlignment
 from oracle3_extras.market.kairos import (
+    DATA_API,
     MARKET_DATA_API,
     MatchedPair,
     kairos_relations,
@@ -281,3 +282,65 @@ async def test_venue_filter(http) -> None:
     assert result.catalog.pairs == [] and result.relations == []
     with pytest.raises(ValueError):
         await kairos_relations(venues=('kalshi', 'opinion'))
+
+
+async def test_clusters_bring_back_non_sports_pairs(http) -> None:
+    serve_kairos_catalog(http)  # no approved links
+    http.get(
+        f'{DATA_API}/markets/active',
+        {
+            'markets': [
+                {'market_id': 'pf1', 'category': 'Crypto'},
+                {'market_id': 'pf9', 'category': 'Sports'},
+            ],
+            'has_more': False,
+            'next_cursor': None,
+        },
+    )
+
+    def clusters(request):
+        assert request.url.params['markets'] == '8:pf1'  # sports markets are not seeds
+        members = [
+            {'provider_id': 8, 'provider': 'predictfun', 'market_id': 'pf1'},
+            {'provider_id': 2, 'provider': 'polymarket', 'market_id': '601'},
+        ]
+        found = request.url.params['floor'] == 'exact'
+        return {
+            'clusters': {
+                '8:pf1': {
+                    'cluster_id': 'c9',
+                    'floor': 'exact',
+                    'truncated': False,
+                    'size': 2,
+                    'members': members,
+                }
+            }
+            if found
+            else {},
+            'count': int(found),
+            'floor': request.url.params['floor'],
+        }
+
+    http.get(f'{DATA_API}/market-clusters', clusters)
+    http.get(f'{venues.GAMMA_API}/markets', [ESPORTS])
+    http.add(
+        'POST',
+        f'{MARKET_DATA_API}/v1/markets/batch',
+        {
+            'markets': {
+                'pf1': kairos_md_market(
+                    'pf1',
+                    ESPORTS['question'],
+                    ['NEMI1', 'LAVKED'],
+                    event_id='cs2-nemi-lav-2026-10-07',
+                )
+            },
+            'misses': [],
+        },
+    )
+    assert (await kairos_relations()).relations == []  # off by default
+    [relation] = (await kairos_relations(clusters=True)).relations
+    assert relation.relation_id == 'kairos:polymarket:601:predictfun:pf1'
+    assert relation.analysis_b['kairos_cluster_id'] == 'c9'
+    assert relation.analysis_b['kairos_cluster_tier'] == 'exact'
+    assert 'cluster c9, by matching titles or event labels' in relation.reasoning

@@ -17,6 +17,7 @@ from oracle3_extras.market.kairos.client import (
     EXECUTION_API,
     MARKET_DATA_API,
     MIN_SIMILARITY,
+    PROVIDER_IDS,
     Candle,
     CandleRequest,
     CandleSeries,
@@ -34,10 +35,12 @@ from oracle3_extras.market.kairos.history import (
 )
 from oracle3_extras.market.kairos.markets import as_polymarket_shape, expand_labels
 from oracle3_extras.market.kairos.relations import (
+    LINKED_CATEGORIES,
     RELATION_PREFIX,
     VENUES,
     KairosRelations,
     build_relation,
+    cluster_seeds,
     kairos_relations,
     relation_id,
     save_relations,
@@ -52,8 +55,10 @@ from oracle3_extras.market.kairos.settlement import (
 __all__ = [
     'DATA_API',
     'EXECUTION_API',
+    'LINKED_CATEGORIES',
     'MARKET_DATA_API',
     'MIN_SIMILARITY',
+    'PROVIDER_IDS',
     'RELATION_PREFIX',
     'Candle',
     'CandleRequest',
@@ -70,6 +75,7 @@ __all__ = [
     'as_polymarket_shape',
     'build_relation',
     'check_settlements',
+    'cluster_seeds',
     'expand_labels',
     'history_summary',
     'kairos_relations',

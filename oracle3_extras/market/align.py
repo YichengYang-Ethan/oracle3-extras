@@ -311,7 +311,13 @@ def _slug(slug: str) -> _Slug:
     """
     parts = slug.lower().split('-')
     for i, part in enumerate(parts):
-        if i >= 1 and re.fullmatch(r'\d{4}', part) and len(parts) >= i + 3:
+        if (
+            i >= 1
+            and re.fullmatch(r'\d{4}', part)
+            and len(parts) >= i + 3
+            and re.fullmatch(r'\d{1,2}', parts[i + 1])
+            and re.fullmatch(r'\d{1,2}', parts[i + 2])
+        ):
             try:
                 day = date(int(part), int(parts[i + 1]), int(parts[i + 2]))
             except ValueError:

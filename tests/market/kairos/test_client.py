@@ -192,3 +192,112 @@ async def test_market_details_batches_and_finds_polymarket_by_either_id(http) ->
     assert len(http.requests) == 2  # 500 per call; unknown venues are not sent
     assert found[('kalshi', 'KX-499')]['category'] == 'Sports'
     assert found[('polymarket', '0xabc')] is found[('polymarket', '7054891')]
+
+
+CLUSTERS = f'{DATA_API}/market-clusters'
+ACTIVE = f'{DATA_API}/markets/active'
+
+
+def member(provider: str, market_id: str, title: str) -> dict:
+    ids = {'kalshi': 1, 'polymarket': 2, 'predictfun': 8}
+    return {
+        'provider_id': ids[provider],
+        'provider': provider,
+        'market_id': market_id,
+        'title': title,
+        'ticker': None,
+        'expires_at': '2027-01-01T00:00:00Z',
+    }
+
+
+def cluster_reply(request):
+    """``pf77`` sits with Polymarket 1 and 5; only Polymarket 5 survives the semantic floor."""
+    wide = [
+        member('predictfun', '77', 'Will X launch?'),
+        member('polymarket', '1', 'A vs. B'),
+        member('polymarket', '5', 'Will X launch?'),
+    ]
+    members = wide if request.url.params['floor'] == 'exact' else [wide[0], wide[2]]
+    return {
+        'clusters': {
+            '8:77': {
+                'cluster_id': 'c1',
+                'floor': request.url.params['floor'],
+                'truncated': False,
+                'size': len(members),
+                'members': members,
+            }
+        },
+        'count': 1,
+        'floor': request.url.params['floor'],
+    }
+
+
+async def test_cluster_seeds_add_pairs_and_links_win(http) -> None:
+    link = kairos_link(('kalshi', 'KXA'), ('polymarket', '1'), ('predictfun', '77'))
+    http.get(LINKS, kairos_links_page([link]))
+    http.get(CLUSTERS, cluster_reply)
+    http.add(
+        'POST',
+        DETAILS,
+        {
+            'markets': [
+                {'market_id': '5', 'provider_id': 2, 'name': 'X', 'category': 'Crypto'},
+                {
+                    'market_id': '77',
+                    'provider_id': 8,
+                    'name': 'X',
+                    'category': 'Crypto',
+                },
+            ]
+        },
+    )
+    catalog = await KairosClient().matched_markets(cluster_seeds=[('predictfun', '77')])
+    by_key = {p.key: p for p in catalog.pairs}
+    linked = by_key[(('polymarket', '1'), ('predictfun', '77'))]
+    assert linked.link_id == 'link-1' and linked.cluster_id == ''  # the link wins
+    clustered = by_key[(('polymarket', '5'), ('predictfun', '77'))]
+    assert (clustered.cluster_id, clustered.tier) == ('c1', 'semantic')
+    assert clustered.side('polymarket').category == 'Crypto'
+    assert (('polymarket', '1'), ('polymarket', '5')) not in by_key  # one venue
+    assert len(catalog.pairs) == 4  # three from the link, one from the cluster
+    floors = sorted(r.url.params['floor'] for r in http.calls(CLUSTERS))
+    assert floors == ['exact', 'semantic']
+
+
+async def test_exact_only_pairs_are_marked_exact(http) -> None:
+    http.get(LINKS, kairos_links_page([]))
+    http.get(CLUSTERS, cluster_reply)
+    http.add('POST', DETAILS, {'markets': []})
+    catalog = await KairosClient().matched_markets(cluster_seeds=[('predictfun', '77')])
+    tiers = {p.side('polymarket').market_id: p.tier for p in catalog.pairs}
+    assert tiers == {'1': 'exact', '5': 'semantic'}
+
+
+async def test_no_seeds_no_cluster_requests(http) -> None:
+    http.get(LINKS, kairos_links_page([]))
+    await KairosClient().matched_markets(cluster_seeds=[])
+    assert http.calls(CLUSTERS) == []
+
+
+async def test_active_markets_pages_and_drops_the_raw_payload(http) -> None:
+    def page(market_id: str, cursor: str | None) -> dict:
+        market = {
+            'market_id': market_id,
+            'title': 't',
+            'category': 'Crypto',
+            'raw': {'big': 'x' * 100},
+        }
+        return {
+            'markets': [market],
+            'has_more': cursor is not None,
+            'next_cursor': cursor,
+        }
+
+    http.get(ACTIVE, page('1', 'c1'), page('2', None))
+    markets = await KairosClient().active_markets('predictfun')
+    assert [m['market_id'] for m in markets] == ['1', '2']
+    assert 'raw' not in markets[0] and markets[0]['category'] == 'Crypto'
+    first, second = http.calls(ACTIVE)
+    assert first.url.params['provider'] == 'predictfun'
+    assert first.url.params['limit'] == '250' and second.url.params['cursor'] == 'c1'

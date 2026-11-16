@@ -67,6 +67,7 @@ oracle3-extras kairos sync                 # write the Kalshi–Polymarket pairs
 oracle3-extras kairos scan                 # cross-venue edges after fees, sized by the books
 oracle3-extras scan --source kairos        # re-check the stored relations later
 oracle3-extras kairos --venues kalshi,polymarket pairs   # only some venues
+oracle3-extras kairos --clusters pairs   # also pairs outside sports, from Kairos's equivalence clusters
 ```
 
 No account is needed. Kairos's public tier allows 60 catalog requests a minute; walking the whole catalog (11,487 pairs on 7 October 2026) takes 14. Set `KAIROS_CLIENT_ID`, `KAIROS_API_KEY` and `KAIROS_API_SECRET` to use an API key instead (a read-only key is enough; nothing here trades). A key raises Kairos's rate limits tenfold and is needed for the fee quotes that confirm Predict.fun prices.

@@ -224,3 +224,16 @@ def test_history_and_settlements_read_the_archive(http, tmp_path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert (out['summary']['settled'], out['summary']['agree']) == (1, 1)
+
+
+def test_clusters_option_seeds_from_predict_fun(http) -> None:
+    route(http)
+    http.get(
+        f'{DATA_API}/markets/active',
+        {'markets': [], 'has_more': False, 'next_cursor': None},
+    )
+    result, out = invoke('kairos', '--clusters', 'pairs')
+    assert result.exit_code == 0, result.output
+    [listing] = http.calls(f'{DATA_API}/markets/active')
+    assert listing.url.params['provider'] == 'predictfun'
+    assert out['summary']['aligned'] == 1

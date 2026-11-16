@@ -1,6 +1,6 @@
 # oracle3 × Kairos: integration notes and proposal
 
-Version 0.5.1 · Maintainer: Yicheng Yang (yy85@illinois.edu)
+Version 0.6.0 · Maintainer: Yicheng Yang (yy85@illinois.edu)
 
 This document describes how `oracle3_extras.market.kairos` uses Kairos's Data API, Market Data API and fee quotes, what we found in the data, and what would make the integration better on both sides. Everything about the APIs below was checked against Kairos's published OpenAPI specifications (`app.kairos.trade/openapi/data-api.yaml`, `market-data-api.yaml`, `execution.yaml`) and live responses on 7 October 2026.
 
@@ -27,7 +27,8 @@ Everything is read-only: no orders go through Kairos or anywhere else.
 | `GET data.kairos.trade/market-links/featured?limit=100&cursor=` | The catalog (since 0.5.1) | Public. One row per approved link: one contract on two to four venues, with each venue's YES and NO token. `nextCursor` pages; a walk restarts if a cursor goes stale (400, 409 or 410). 1,428 links (2,547 pairs) in 15 requests on 15 November 2026. Links that started more than 6 hours ago leave the list. |
 | `POST data.kairos.trade/markets/details` | Each market's name and Kairos category | Public; 500 markets per call. Kairos has no category for some Polymarket markets. |
 | `GET data.kairos.trade/matched-markets?cursor=&limit=1000` | The catalog until 0.5.0 | Public; documented limit 60 a minute. Cursor mode, `has_more` as the stop signal, restart on 409. A full walk of 11,487 pairs was 14 requests. Retired by Kairos in November 2026 (404). |
-| `GET data.kairos.trade/market-clusters` | `KairosClient.market_clusters()` | Not used by `sync` or `scan`; available for "which venues list this market?" |
+| `GET data.kairos.trade/markets/active?provider=predictfun` | Seeds for `--clusters` (since 0.6.0): every active Predict.fun market outside Sports and Esports | Public; 250 markets a page. Predict.fun was 59 pages and about 25 MB (Kairos sends each venue's raw payload) on 15 November 2026 |
+| `GET data.kairos.trade/market-clusters` | `--clusters`: pairs outside sports, which approved links leave out | Public; 60 a minute (anonymous callers get half); 200 references a call, at both floors. Membership comes from the `exact` floor; pairs that the stricter `semantic` floor keeps are marked `semantic` |
 | `POST md.kairos.trade/v1/markets/batch` | Predict.fun and Hyperliquid market metadata | 200 ids per call |
 | `GET md.kairos.trade/v1/marks` | Predict.fun last trades for the scan | 100 pairs per call (see 4.8) |
 | `GET execution.kairos.trade/orders/fee-quote` | Confirm a Predict.fun price on the live book, with fees | Needs a key with `trade:read`; at most 50 relations per scan, a few sizes each |

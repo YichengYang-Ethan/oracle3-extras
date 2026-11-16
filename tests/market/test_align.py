@@ -384,3 +384,12 @@ def test_rain_delayed_tennis_match_is_kept_with_a_warning(monkeypatch) -> None:
         align, '_now', lambda: datetime(2026, 10, 6, 8, tzinfo=timezone.utc)
     )
     assert align_kalshi_polymarket(kalshi, poly).problem.startswith('different dates')
+
+
+def test_long_numbers_in_a_slug_are_not_dates() -> None:
+    from oracle3_extras.market.align import _slug
+
+    # Non-sports slugs carry prices and counts: "2026" then a twelve-digit number
+    # once overflowed date() instead of being skipped.
+    assert _slug('will-btc-hit-2026-100000000000-1').day is None
+    assert str(_slug('nba-lal-bos-2026-11-16').day) == '2026-11-16'

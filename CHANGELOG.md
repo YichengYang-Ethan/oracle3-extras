@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0] - 2026-11-15
+
+### Added
+
+- `kairos --clusters` (`kairos_relations(clusters=True)`): pairs from Kairos's equivalence clusters, for the markets its approved links leave out. Links are almost all sports games. On 15 November 2026 the clusters around Predict.fun's non-sports markets added about 3,100 pairs, about 2,550 of them lined up: crypto, finance, politics, culture, science and tech.
+  - `cluster_seeds()`: every Predict.fun market that Kairos lists as active outside Sports and Esports (`KairosClient.active_markets`, `GET /markets/active`).
+  - `matched_markets(cluster_seeds=...)` resolves them with `GET /market-clusters`. Membership comes from the `exact` floor. Each pair records its cluster (`MatchedPair.cluster_id`, `analysis_b['kairos_cluster_id']`) and its tier: `semantic` when the stricter floor also keeps the two together, otherwise `exact`. A pair that a link also lists keeps the link.
+  - Kalshi pairs outside sports are listed but not lined up: the Kalshi aligner compares sports markets only.
+
+### Fixed
+
+- A Polymarket slug with a year followed by a long number (a price or a count) crashed the slug parser with `OverflowError`; such parts are no longer read as dates.
+
 ## [0.5.1] - 2026-11-15
 
 ### Fixed

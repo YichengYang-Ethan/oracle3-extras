@@ -65,6 +65,18 @@ PROVIDER_IDS = {'kalshi': 1, 'polymarket': 2, 'predictfun': 8, 'hyperliquid': 9}
 LINKS_PAGE_SIZE = 100
 #: Markets per ``POST /markets/details`` call, Kairos's hard cap.
 DETAILS_BATCH = 500
+#: Markets per ``/markets/active`` page, Kairos's maximum.
+ACTIVE_PAGE_SIZE = 250
+#: What :meth:`KairosClient.active_markets` keeps of each market.
+_ACTIVE_FIELDS = (
+    'market_id',
+    'condition_id',
+    'event_id',
+    'title',
+    'category',
+    'status',
+    'end_date',
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +181,13 @@ class KairosMarket:
 class MatchedPair:
     """Two markets that Kairos matched as the same underlying question.
 
-    Pairs from an approved Kairos link carry its ``link_id`` and a similarity
-    of 1.0: the link is Kairos's own verdict that both markets are one
-    contract. Pairs from the retired ``/matched-markets`` catalog kept its
-    embedding similarity (0.82 to 1).
+    Pairs from an approved Kairos link carry its ``link_id``: the link is
+    Kairos's own verdict that both markets are one contract. Pairs from an
+    equivalence cluster carry its ``cluster_id`` and a ``tier``: ``semantic``
+    when Kairos's stricter floor (embeddings or a venue identifier) keeps the
+    two together, ``exact`` when only normalized titles or event labels do.
+    Both come in at similarity 1.0. Pairs from the retired
+    ``/matched-markets`` catalog kept its embedding similarity (0.82 to 1).
     """
 
     a: KairosMarket
@@ -180,6 +195,8 @@ class MatchedPair:
     similarity: float
     updated_at: str = ''
     link_id: str = ''
+    cluster_id: str = ''
+    tier: str = ''
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any]) -> MatchedPair:
@@ -287,6 +304,68 @@ def _link_pairs(
         for i, a in enumerate(markets)
         for b in markets[i + 1 :]
     ]
+
+
+def _member_ref(member: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        str(member.get('provider') or '').lower(),
+        str(member.get('market_id') or ''),
+    )
+
+
+def _pair_key(
+    first: tuple[str, str], second: tuple[str, str]
+) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((first, second)))
+
+
+def _cluster_pairs(
+    cluster: Mapping[str, Any],
+    details: Mapping[tuple[str, str], Mapping[str, Any]],
+    strict: frozenset[tuple[tuple[str, str], ...]],
+) -> list[MatchedPair]:
+    """Every two markets on different venues in one Kairos equivalence cluster.
+
+    ``strict`` holds the pairs that the stricter ``semantic`` floor also keeps
+    together; the others are ``exact``-tier pairs. Names and categories come
+    from ``details`` when Kairos has them.
+    """
+    cluster_id = str(cluster.get('cluster_id') or '')
+    markets: list[KairosMarket] = []
+    for member in cluster.get('members') or []:
+        provider, market_id = _member_ref(member)
+        if provider not in PROVIDER_IDS or not market_id:
+            continue
+        if any((m.provider, m.market_id) == (provider, market_id) for m in markets):
+            continue
+        info = details.get((provider, market_id)) or {}
+        markets.append(
+            KairosMarket(
+                provider=provider,
+                market_id=market_id,
+                provider_id=PROVIDER_IDS[provider],
+                title=info.get('name') or member.get('title'),
+                ticker=market_id if provider == 'kalshi' else None,
+                expires_at=member.get('expires_at'),
+                category=info.get('category'),
+            )
+        )
+    pairs: list[MatchedPair] = []
+    for i, a in enumerate(markets):
+        for b in markets[i + 1 :]:
+            if a.provider == b.provider:
+                continue  # two listings on one venue are not a cross-venue pair
+            key = _pair_key((a.provider, a.market_id), (b.provider, b.market_id))
+            pairs.append(
+                MatchedPair(
+                    a=a,
+                    b=b,
+                    similarity=1.0,
+                    cluster_id=cluster_id,
+                    tier='semantic' if key in strict else 'exact',
+                )
+            )
+    return pairs
 
 
 def _rfc3339(moment: datetime) -> str:
@@ -435,7 +514,11 @@ class KairosClient:
         return new_client(timeout=self.timeout, headers=headers)
 
     async def matched_markets(
-        self, *, provider: str | None = None, min_similarity: float | None = None
+        self,
+        *,
+        provider: str | None = None,
+        min_similarity: float | None = None,
+        cluster_seeds: Iterable[tuple[str, str]] | None = None,
     ) -> MatchedMarkets:
         """The whole cross-venue catalog: every approved Kairos link, as pairs.
 
@@ -451,6 +534,11 @@ class KairosClient:
                 ``polymarket``, ``predictfun`` or ``hyperliquid``).
             min_similarity: Ignored: links carry no similarity score. Kept so
                 callers written for the old catalog keep working.
+            cluster_seeds: Also resolve these ``(provider, market id)``
+                markets to their equivalence clusters (``GET
+                /market-clusters``) and add a pair for every two venues in
+                each cluster. Links are almost all sports games; clusters
+                reach the rest. A pair both list keeps its link.
 
         Kairos rebuilds the list every minute. If a page cursor stops working
         mid-walk (HTTP 400, 409 or 410), the walk restarts.
@@ -458,23 +546,97 @@ class KairosClient:
         if min_similarity is not None:
             logger.info('Kairos links carry no similarity; min_similarity is ignored')
         links = await self._links()
+        clusters, strict = await self._clusters(cluster_seeds or ())
         details = await self.market_details(
-            (venue, _leg_market_id(venue, leg))
-            for link in links
-            for leg in link.get('venues') or []
-            if (venue := str(leg.get('provider') or '').lower())
+            [
+                (venue, _leg_market_id(venue, leg))
+                for link in links
+                for leg in link.get('venues') or []
+                if (venue := str(leg.get('provider') or '').lower())
+            ]
+            + [
+                _member_ref(member)
+                for cluster in clusters
+                for member in cluster.get('members') or []
+            ]
         )
+        candidates = [pair for link in links for pair in _link_pairs(link, details)]
+        candidates += [
+            pair
+            for cluster in clusters
+            for pair in _cluster_pairs(cluster, details, strict)
+        ]
         pairs: list[MatchedPair] = []
         seen: set[tuple[tuple[str, str], ...]] = set()
-        for link in links:
-            for pair in _link_pairs(link, details):
-                if provider and provider not in pair.providers:
-                    continue
-                if pair.key not in seen:
-                    seen.add(pair.key)
-                    pairs.append(pair)
-        logger.info('Kairos: %d links, %d pairs', len(links), len(pairs))
+        for pair in candidates:
+            if provider and provider not in pair.providers:
+                continue
+            if pair.key not in seen:
+                seen.add(pair.key)
+                pairs.append(pair)
+        logger.info(
+            'Kairos: %d links, %d clusters, %d pairs',
+            len(links),
+            len(clusters),
+            len(pairs),
+        )
         return MatchedMarkets(pairs=pairs)
+
+    async def _clusters(
+        self, seeds: Iterable[tuple[str, str]]
+    ) -> tuple[list[dict[str, Any]], frozenset[tuple[tuple[str, str], ...]]]:
+        """The clusters around ``seeds`` (each once), and the pairs the stricter floor keeps.
+
+        Membership comes from the ``exact`` floor, which admits every kind of
+        evidence; a pair that the ``semantic`` floor also keeps together is
+        marked as such.
+        """
+        refs = [
+            (PROVIDER_IDS[provider], str(market_id))
+            for provider, market_id in seeds
+            if provider in PROVIDER_IDS and market_id
+        ]
+        if not refs:
+            return [], frozenset()
+        wide = await self.market_clusters(refs, floor='exact')
+        narrow = await self.market_clusters(refs, floor='semantic')
+        clusters = list(
+            {str(c.get('cluster_id') or ref): c for ref, c in wide.items()}.values()
+        )
+        strict = frozenset(
+            _pair_key(_member_ref(a), _member_ref(b))
+            for cluster in narrow.values()
+            for i, a in enumerate(cluster.get('members') or [])
+            for b in (cluster.get('members') or [])[i + 1 :]
+        )
+        return clusters, strict
+
+    async def active_markets(self, provider: str) -> list[dict[str, Any]]:
+        """Every market Kairos lists as active on one venue (``GET /markets/active``).
+
+        Pages of 250. Each market keeps its id, condition and event ids, title,
+        Kairos category, status and end date; Kairos's copy of the venue's raw
+        payload is dropped.
+        """
+        params: dict[str, Any] = {'provider': provider, 'limit': ACTIVE_PAGE_SIZE}
+        markets: list[dict[str, Any]] = []
+        cursors: set[str] = set()
+        async with self._client() as client:
+            while True:
+                data = await request_json(
+                    client, 'GET', f'{self.base_url}/markets/active', params=params
+                )
+                markets.extend(
+                    {key: market.get(key) for key in _ACTIVE_FIELDS}
+                    for market in data.get('markets') or []
+                )
+                cursor = data.get('next_cursor')
+                if not data.get('has_more') or not cursor or cursor in cursors:
+                    break
+                cursors.add(cursor)
+                params['cursor'] = cursor
+        logger.info('Kairos: %d active %s markets', len(markets), provider)
+        return markets
 
     async def _links(self) -> list[dict[str, Any]]:
         """Every approved link, restarting a walk whose cursor goes stale."""

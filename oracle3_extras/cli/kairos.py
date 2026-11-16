@@ -41,6 +41,15 @@ ARCHIVE = click.Path(dir_okay=False, path_type=Path)
     '--include-closed', is_flag=True, help='Keep pairs whose markets no longer trade.'
 )
 @click.option(
+    '--clusters',
+    is_flag=True,
+    help=(
+        "Also add pairs from Kairos's equivalence clusters around every non-sports "
+        'Predict.fun market (crypto, politics, finance, tech, culture), which '
+        "Kairos's approved links leave out."
+    ),
+)
+@click.option(
     '--venues',
     default=None,
     help=(
@@ -53,6 +62,7 @@ def kairos(
     ctx: click.Context,
     min_similarity: float | None,
     include_closed: bool,
+    clusters: bool,
     venues: str | None,
 ) -> None:
     """Kairos's cross-venue matched markets (https://kairos.trade) as oracle3 relations.
@@ -73,6 +83,7 @@ def kairos(
     ctx.obj = {
         'min_similarity': min_similarity,
         'include_closed': include_closed,
+        'clusters': clusters,
         'venues': chosen,
     }
 
@@ -89,6 +100,7 @@ def _load(
             min_similarity=options['min_similarity'],
             include_closed=options['include_closed'],
             venues=options['venues'] or default,
+            clusters=options['clusters'],
         )
     )
 
@@ -155,6 +167,7 @@ def pairs(options: dict[str, Any], show_rejected: bool, limit: int | None) -> No
                 },
                 'similarity': pair.similarity,
                 'link_id': pair.link_id,
+                'cluster_id': pair.cluster_id,
                 'reason': reason,
             }
             for pair, reason in result.rejected

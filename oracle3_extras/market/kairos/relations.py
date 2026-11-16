@@ -40,10 +40,12 @@ from oracle3_extras.market.kairos.client import (
 from oracle3_extras.market.kairos.markets import as_polymarket_shape
 
 __all__ = [
+    'LINKED_CATEGORIES',
     'RELATION_PREFIX',
     'VENUES',
     'KairosRelations',
     'build_relation',
+    'cluster_seeds',
     'kairos_relations',
     'relation_id',
     'save_relations',
@@ -55,6 +57,9 @@ RELATION_PREFIX = 'kairos:'
 
 #: Venues Kairos matches, in the order that decides which side is market A.
 VENUES = ('kalshi', 'polymarket', 'predictfun', 'hyperliquid')
+
+#: Kairos categories that its approved links already cover; :func:`cluster_seeds` skips them.
+LINKED_CATEGORIES = frozenset({'Sports', 'Esports'})
 
 _NAMES = {
     'kalshi': 'Kalshi',
@@ -249,6 +254,11 @@ def build_relation(
         analysis_b={
             'source': 'kairos',
             **({'kairos_link_id': pair.link_id} if pair.link_id else {}),
+            **(
+                {'kairos_cluster_id': pair.cluster_id, 'kairos_cluster_tier': pair.tier}
+                if pair.cluster_id
+                else {}
+            ),
             'kairos_updated_at': pair.updated_at,
             'kairos_categories': categories,
             'evidence': list(alignment.evidence),
@@ -259,9 +269,19 @@ def build_relation(
 
 
 def _source(pair: MatchedPair) -> str:
-    """Where the pair came from: an approved Kairos link, or the old similarity catalog."""
+    """Where the pair came from: a Kairos link, a cluster, or the old similarity catalog."""
     if pair.link_id:
         return f'Kairos lists these markets as one contract (link {pair.link_id}). '
+    if pair.cluster_id:
+        evidence = (
+            'embeddings or a venue identifier'
+            if pair.tier == 'semantic'
+            else 'matching titles or event labels'
+        )
+        return (
+            f'Kairos groups these markets as one event (cluster {pair.cluster_id}, '
+            f'by {evidence}). '
+        )
     return f'Kairos matched these markets (similarity {pair.similarity:.2f}). '
 
 
@@ -288,6 +308,22 @@ async def _lookup(
     return {mid: as_polymarket_shape(m, venue) for mid, m in found.items()}
 
 
+async def cluster_seeds(client: KairosClient) -> list[tuple[str, str]]:
+    """Markets to resolve to equivalence clusters: every non-sports Predict.fun market.
+
+    Kairos's approved links are almost all sports games. Predict.fun lists
+    copies of many Polymarket questions, so its other markets (crypto,
+    politics, finance, science, tech and culture) reach their Polymarket and
+    Kalshi counterparts through their clusters.
+    """
+    markets = await client.active_markets('predictfun')
+    return [
+        ('predictfun', str(m['market_id']))
+        for m in markets
+        if m.get('market_id') and m.get('category') not in LINKED_CATEGORIES
+    ]
+
+
 async def kairos_relations(
     client: KairosClient | None = None,
     *,
@@ -295,6 +331,7 @@ async def kairos_relations(
     venues: Sequence[str] = VENUES,
     min_similarity: float | None = None,
     include_closed: bool = False,
+    clusters: bool = False,
 ) -> KairosRelations:
     """Fetch the Kairos catalog and align every pair between the given venues.
 
@@ -306,6 +343,10 @@ async def kairos_relations(
             score (kept for callers of the old catalog).
         include_closed: Keep pairs whose markets no longer trade (needed to
             align an older snapshot whose games have finished).
+        clusters: Also add pairs from Kairos's equivalence clusters around
+            every non-sports Predict.fun market (:func:`cluster_seeds`): the
+            crypto, politics, finance, tech and culture pairs that approved
+            links leave out. Costs about 100 more requests.
     """
     unknown = set(venues) - set(VENUES)
     if unknown:
@@ -313,8 +354,9 @@ async def kairos_relations(
     client = client or KairosClient()
     if catalog is None:
         provider = 'kalshi' if set(venues) == {'kalshi', 'polymarket'} else None
+        seeds = await cluster_seeds(client) if clusters else None
         catalog = await client.matched_markets(
-            provider=provider, min_similarity=min_similarity
+            provider=provider, min_similarity=min_similarity, cluster_seeds=seeds
         )
     ordered = [
         (pair, sides) for pair in catalog.pairs if (sides := _ordered(pair, venues))
